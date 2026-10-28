@@ -3,3 +3,5 @@ tunnel.log
 tunnel.out.log
 server.out.log
 server.err.log
+runner.out.log
+runner.err.log
