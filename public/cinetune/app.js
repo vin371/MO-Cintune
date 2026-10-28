@@ -1,10 +1,24 @@
 (() => {
-  const routes = { home: "trang_ch_cinetune/code.html", search: "t_m_ki_m_cinetune/code.html", charts: "charts", song: "chi_ti_t_b_i_h_t_cinetune/code.html", player: "tr_nh_ph_t_nh_c_cinetune/code.html", library: "th_vi_n_cinetune/code.html", profile: "c_nh_n_cinetune/code.html", lyrics: "l_i_b_i_h_t_cinetune_1/code.html" };
+  const routes = { home: true, search: true, charts: true, song: true, player: true, library: true, profile: true, lyrics: true, artist: true, "my-playlist": true, queue: true };
   let api = "";
   let vietnamConnection;
   const frame = document.querySelector("#screen");
   const audio = new Audio();
-  const state = { route: "", tracks: [], chartData: null, chartHour: 23, results: [], releaseTracks: [], releaseLoading: false, releaseError: "", query: "", current: null, playing: false, loading: true, error: "", playbackError: "", chartMode: "chart", topSections: [], topLoading: false, topError: "", playlistId: "", playlistTitle: "", playlistTracks: [], playlistLoading: false, queue: [], shuffle: localStorage.getItem("cinetune-shuffle") === "true", shufflePlayed: new Set(), shuffleQueueRef: null, repeatMode: localStorage.getItem("cinetune-repeat") || "all", sleepUntil: 0, showSleepOptions: false, lyricId: null, lyricLines: [], lyricLoading: false, lyricError: "", favorites: new Set(JSON.parse(localStorage.getItem("cinetune-favorites") || "[]")), history: JSON.parse(localStorage.getItem("cinetune-history") || "[]") };
+  const stored = (key, fallback) => { try { return JSON.parse(localStorage.getItem(key)) ?? fallback; } catch { return fallback; } };
+  const state = {
+    route: "", tracks: [], chartData: null, chartHour: 23, results: [],
+    releaseTracks: [], releaseLoading: false, releaseError: "", query: "",
+    current: null, playing: false, loading: true, error: "", playbackError: "",
+    chartMode: "chart", topSections: [], topLoading: false, topError: "",
+    playlistId: "", playlistTitle: "", playlistTracks: [], playlistLoading: false,
+    queue: stored("cinetune-queue", []), shuffle: localStorage.getItem("cinetune-shuffle") === "true",
+    repeatMode: localStorage.getItem("cinetune-repeat") || "all", sleepUntil: 0, showSleepOptions: false,
+    lyricId: null, lyricLines: [], lyricLoading: false, lyricError: "",
+    favorites: new Set(stored("cinetune-favorites", [])), history: stored("cinetune-history", []),
+    myPlaylists: stored("cinetune-playlists", []), selectedPlaylist: localStorage.getItem("cinetune-selected-playlist") || "",
+    deletingPlaylistId: "", addingTrackId: "", artistAlias: localStorage.getItem("cinetune-artist") || "",
+    artistData: null, artistTracks: [], artistLoading: false, artistError: "", artistPage: 1, artistHasMore: false
+  };
   const esc = (value = "") => String(value).replace(/[&<>'"]/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;" }[char]));
   const art = (track, large = false) => { const url = track?.thumbnailM || track?.thumbnail || ""; return large ? url.replace(/\/w(?:94|240)_/, "/w600_") : url; };
   const artist = (track) => track?.artistsNames || "Nghệ sĩ";
@@ -12,8 +26,10 @@
   const trackId = (track) => track?.encodeId || track?.id;
   const duration = (seconds) => `${Math.floor((Number(seconds) || 0) / 60)}:${String((Number(seconds) || 0) % 60).padStart(2, "0")}`;
   const route = () => location.hash.slice(1) === "lyrics-karaoke" ? "lyrics" : Object.hasOwn(routes, location.hash.slice(1)) ? location.hash.slice(1) : "home";
-  const allTracks = () => [...state.tracks, ...state.results, ...state.releaseTracks, ...state.playlistTracks, ...state.history];
-  const save = () => { localStorage.setItem("cinetune-favorites", JSON.stringify([...state.favorites])); localStorage.setItem("cinetune-history", JSON.stringify(state.history.slice(0, 20))); };
+  const allTracks = () => [...state.tracks, ...state.results, ...state.releaseTracks, ...state.playlistTracks, ...state.artistTracks, ...state.history, ...state.queue, ...state.myPlaylists.flatMap((list) => list.tracks)];
+  const save = () => { localStorage.setItem("cinetune-favorites", JSON.stringify([...state.favorites])); localStorage.setItem("cinetune-history", JSON.stringify(state.history.slice(0, 20))); localStorage.setItem("cinetune-playlists", JSON.stringify(state.myPlaylists)); localStorage.setItem("cinetune-queue", JSON.stringify(state.queue)); };
+  const selectedList = () => state.myPlaylists.find((list) => list.id === state.selectedPlaylist);
+  const artistLinks = (track) => (Array.isArray(track?.artists) && track.artists.length ? track.artists : [{ name: artist(track), alias: track?.artist?.alias }]).map((person) => person.alias ? `<button class="artist-link" data-artist="${esc(person.alias)}">${esc(person.name)}</button>` : `<span>${esc(person.name)}</span>`).join('<span class="artist-separator">, </span>');
   const repaint = () => { if (frame.contentDocument) render(frame.contentDocument); };
   const go = (next) => { location.hash = Object.hasOwn(routes, next) ? next : "home"; };
   const back = () => history.length > 1 && route() !== "home" ? history.back() : go("home");
@@ -68,31 +84,78 @@
     catch (error) { state.topError = "Chưa tải được danh sách này. Hãy thử lại."; }
     finally { state.playlistLoading = false; repaint(); }
   }
+  async function openArtist(alias) {
+    localStorage.setItem("cinetune-artist", alias);
+    state.artistAlias = alias; state.artistData = null; state.artistTracks = []; state.artistError = ""; state.artistPage = 1; state.artistHasMore = false;
+    go("artist"); state.artistLoading = true; repaint();
+    try {
+      const response = await get(`/api/artist?name=${encodeURIComponent(alias)}`);
+      if (response?.err !== 0 || !response.data) throw new Error("artist unavailable");
+      if (state.artistAlias !== alias) return;
+      state.artistData = response.data;
+      const sectionSongs = response.data.sections?.filter((section) => section.sectionType === "song").flatMap((section) => section.items || []).filter((item) => item.encodeId) || [];
+      state.artistTracks = [...new Map(sectionSongs.map((item) => [trackId(item), item])).values()];
+      if (response.data.id) await loadArtistSongs(1);
+    } catch { if (state.artistAlias === alias) state.artistError = "Chưa tải được trang nghệ sĩ. Chạm để thử lại."; }
+    finally { if (state.artistAlias === alias) { state.artistLoading = false; repaint(); } }
+  }
+  async function loadArtistSongs(pageNumber) {
+    const id = state.artistData?.id; if (!id) return;
+    state.artistLoading = true; repaint();
+    try {
+      const response = await get(`/api/artist-songs?id=${encodeURIComponent(id)}&page=${pageNumber}&count=50`);
+      const songs = response?.data?.items || [];
+      if (state.artistData?.id !== id) return;
+      state.artistTracks = [...new Map([...state.artistTracks, ...songs].map((item) => [trackId(item), item])).values()];
+      state.artistPage = pageNumber; state.artistHasMore = Boolean(response?.data?.hasMore);
+    } catch { state.artistError = "Chưa tải thêm được bài hát."; }
+    finally { state.artistLoading = false; repaint(); }
+  }
+  function setQueue(list) {
+    state.queue = [...list];
+    if (state.shuffle && state.queue.length > 1) {
+      const [first, ...rest] = state.queue;
+      for (let i = rest.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [rest[i], rest[j]] = [rest[j], rest[i]]; }
+      state.queue = [first, ...rest];
+    }
+    save();
+  }
+  function shuffleQueue() {
+    const currentId = trackId(state.current);
+    const remaining = (state.queue.length ? state.queue : state.tracks).filter((track) => trackId(track) !== currentId);
+    for (let i = remaining.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [remaining[i], remaining[j]] = [remaining[j], remaining[i]]; }
+    state.queue = [state.current, ...remaining].filter(Boolean); save();
+  }
+  function createPlaylist(name, trackIdToAdd = "") {
+    const title = name.trim().slice(0, 60); if (!title) return;
+    const track = allTracks().find((item) => trackId(item) === trackIdToAdd);
+    const list = { id: `local-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`, name: title, tracks: track ? [track] : [] };
+    state.myPlaylists.unshift(list); state.addingTrackId = ""; save(); repaint();
+  }
+  function addToPlaylist(listId, id) {
+    const list = state.myPlaylists.find((entry) => entry.id === listId);
+    const track = allTracks().find((entry) => trackId(entry) === id);
+    if (list && track && !list.tracks.some((entry) => trackId(entry) === id)) list.tracks.push(track);
+    state.addingTrackId = ""; save(); repaint();
+  }
   function advance(direction, fromEnd = false) {
     const list = state.queue.length ? state.queue : state.tracks;
     if (!list.length) { state.playing = false; repaint(); return; }
     if (fromEnd && state.repeatMode === "one") { audio.currentTime = 0; audio.play().catch(() => { state.playing = false; repaint(); }); return; }
     const index = list.findIndex((track) => trackId(track) === trackId(state.current));
-    if (state.shuffle && direction > 0) {
-      let choices = list.filter((track) => !state.shufflePlayed.has(trackId(track)));
-      if (!choices.length) {
-        if (fromEnd && state.repeatMode === "off") { state.playing = false; repaint(); return; }
-        state.shufflePlayed = new Set([trackId(state.current)]);
-        choices = list.filter((track) => trackId(track) !== trackId(state.current));
-      }
-      return play(trackId(choices[Math.floor(Math.random() * choices.length)] || state.current));
-    }
     if (fromEnd && state.repeatMode === "off" && index >= list.length - 1) { state.playing = false; repaint(); return; }
     play(trackId(list[(index + direction + list.length) % list.length]));
   }
   function queueForRoute() {
     if (state.route === "charts" && state.chartMode === "top100" && state.playlistId) return state.playlistTracks;
     if (state.route === "charts" && state.chartMode === "new") return state.releaseTracks;
+    if (state.route === "artist") return state.artistTracks;
+    if (state.route === "my-playlist") return selectedList()?.tracks || [];
     if (state.route === "search" && state.query) return state.results;
     if (state.route === "library") return state.tracks.filter((track) => state.favorites.has(trackId(track))).concat(state.history.filter((track) => !state.favorites.has(trackId(track))));
     return state.tracks;
   }
-  function toggleShuffle() { state.shuffle = !state.shuffle; state.shufflePlayed = new Set([trackId(state.current)]); localStorage.setItem("cinetune-shuffle", String(state.shuffle)); repaint(); }
+  function toggleShuffle() { state.shuffle = !state.shuffle; if (state.shuffle) shuffleQueue(); localStorage.setItem("cinetune-shuffle", String(state.shuffle)); repaint(); }
   function setRepeatMode() {
     state.repeatMode = { all: "one", one: "off", off: "all" }[state.repeatMode] || "all";
     localStorage.setItem("cinetune-repeat", state.repeatMode);
@@ -147,8 +210,6 @@
   }
   async function play(id) {
     const track = allTracks().find((item) => trackId(item) === id); if (!track) return;
-    if (state.shuffleQueueRef !== state.queue) { state.shufflePlayed = new Set(); state.shuffleQueueRef = state.queue; }
-    state.shufflePlayed.add(id);
     state.current = track; miniDismissed = false; state.lyricId = null; state.history = [track, ...state.history.filter((item) => trackId(item) !== id)].slice(0, 20); save();
     state.playbackError = "";
     try {
@@ -183,7 +244,12 @@
 
   function item(track) {
     const id = trackId(track), liked = state.favorites.has(id);
-    return `<article class="track"><img src="${esc(art(track))}" alt="" loading="lazy"><button class="copy" data-nav="song" data-track="${esc(id)}"><strong>${esc(track.title)}</strong><span>${esc(artist(track))}</span></button><button class="round" data-play="${esc(id)}">▶</button><button class="heart" data-favorite="${esc(id)}">${liked ? "♥" : "♡"}</button></article>`;
+    return `<article class="track"><img src="${esc(art(track))}" alt="" loading="lazy"><span class="track-info"><button class="copy" data-nav="song" data-track="${esc(id)}"><strong>${esc(track.title)}</strong></button><span class="track-artists">${artistLinks(track)}</span></span><button class="round" data-play="${esc(id)}">▶</button><button class="track-add" data-add-track="${esc(id)}" aria-label="Thêm vào playlist">＋</button><button class="heart" data-favorite="${esc(id)}">${liked ? "♥" : "♡"}</button></article>`;
+  }
+  function playlistPicker() {
+    if (!state.addingTrackId) return "";
+    const choices = state.myPlaylists.map((list) => `<button data-add-to-list="${esc(list.id)}"><strong>${esc(list.name)}</strong><span>${list.tracks.length} bài hát</span></button>`).join("");
+    return `<div class="modal-backdrop" data-close-picker><section class="playlist-picker" role="dialog" aria-modal="true" aria-label="Thêm vào playlist"><div class="picker-head"><h2>Thêm vào playlist</h2><button data-close-picker aria-label="Đóng">×</button></div>${choices || '<p class="note">Bạn chưa có playlist nào.</p>'}<form data-create-playlist><label for="playlist-name">Tạo playlist mới</label><div><input id="playlist-name" name="name" maxlength="60" required placeholder="Tên playlist"><button type="submit">Tạo & thêm</button></div></form></section></div>`;
   }
   function chartVisual(compact = false) {
     const chart = state.chartData;
@@ -240,7 +306,7 @@
     return page("Top 100", `${tabs}${state.topLoading ? '<div class="empty">Đang tải Top 100…</div>' : state.topError ? `<button class="empty" data-retry-top>${esc(state.topError)}</button>` : groups}`);
   }
   function searchPage() { return page("Tìm kiếm", `<input class="search" id="query" value="${esc(state.query)}" placeholder="Tìm bài hát, nghệ sĩ hoặc thể loại" autofocus><p class="note" id="search-note">${state.query ? `Kết quả cho “${esc(state.query)}”` : "Gợi ý nhạc thịnh hành"}</p><section id="search-results">${searchMarkup()}</section>`); }
-  function song() { const track = state.current || state.tracks[0]; if (!track) return page("Chi tiết bài hát", '<div class="empty">Đang tải bài hát…</div>', { backButton: true }); const id = trackId(track); return page("Chi tiết bài hát", `<div class="art-frame"><img class="art" src="${esc(art(track, true))}" alt="Bìa ${esc(track.title)}"></div><section class="center"><h2>${esc(track.title)}</h2><p>${esc(artist(track))}</p><p class="note">${duration(track.duration)}</p></section><div class="actions"><button class="primary" data-play="${esc(id)}">▶ Phát bài hát</button><button class="secondary" data-favorite="${esc(id)}">${state.favorites.has(id) ? "♥ Đã thích" : "♡ Yêu thích"}</button></div>`, { backButton: true }); }
+  function song() { const track = state.current || state.tracks[0]; if (!track) return page("Chi tiết bài hát", '<div class="empty">Đang tải bài hát…</div>', { backButton: true }); const id = trackId(track); return page("Chi tiết bài hát", `<div class="art-frame"><img class="art" src="${esc(art(track, true))}" alt="Bìa ${esc(track.title)}"></div><section class="center"><h2>${esc(track.title)}</h2><p class="artist-links">${artistLinks(track)}</p><p class="note">${duration(track.duration)}</p></section><div class="actions"><button class="primary" data-play="${esc(id)}">▶ Phát bài hát</button><button class="secondary" data-favorite="${esc(id)}">${state.favorites.has(id) ? "♥ Đã thích" : "♡ Yêu thích"}</button></div>`, { backButton: true }); }
   function player() {
     const track = state.current || state.tracks[0];
     if (!track) return page("Trình phát", '<div class="empty">Đang tải trình phát…</div>', { backButton: true, tabs: false });
@@ -252,14 +318,35 @@
     const upcoming = list.length > 1 ? Array.from({ length: Math.min(3, list.length - 1) }, (_, offset) => list[(index + offset + 1 + list.length) % list.length]) : [];
     const repeat = { all: ["↻", "Lặp danh sách"], one: ["↻₁", "Lặp một bài"], off: ["↻", "Không lặp"] }[state.repeatMode] || ["↻", "Lặp danh sách"];
     const sleepOptions = state.showSleepOptions ? `<div class="sleep-options">${[[0, "Tắt"], [15, "15 phút"], [30, "30 phút"], [60, "60 phút"]].map(([minutes, label]) => `<button data-sleep="${minutes}" class="${(state.sleepUntil > 0 && Math.ceil((state.sleepUntil - Date.now()) / 60000) === minutes) || (!state.sleepUntil && minutes === 0) ? "selected" : ""}">${label}</button>`).join("")}</div>` : "";
-    return page("Trình phát", `<div class="art-frame"><img class="art" src="${esc(art(track, true))}" alt="Bìa ${esc(track.title)}"></div><section class="center"><h2>${esc(track.title)}</h2><p>${esc(artist(track))}</p></section>${state.playbackError ? `<div class="card" role="alert"><p>${esc(state.playbackError)}</p><a href="${esc(officialUrl(track))}" target="_blank" rel="noopener noreferrer">Nghe bài này trên Zing MP3 ↗</a></div>` : ""}<input class="seek" id="seek" type="range" min="0" max="1000" value="${Math.round(pct * 10)}" aria-label="Tua bài hát" style="--played:${pct}%"><div class="time"><span id="elapsed">${duration(Math.floor(audio.currentTime))}</span><span id="total">${duration(Math.floor(total || 0))}</span></div><div class="controls"><button data-action="previous" aria-label="Bài trước">‹‹</button><button class="main" data-action="toggle" aria-label="${state.playing ? "Tạm dừng" : "Phát"}">${state.playing ? "Ⅱ" : "▶"}</button><button data-action="next" aria-label="Bài tiếp">››</button></div><div class="player-tools"><button data-action="shuffle" class="${state.shuffle ? "selected" : ""}" aria-label="Phát ngẫu nhiên"><b>⤨</b><span>Ngẫu nhiên</span></button><button data-action="repeat" class="${state.repeatMode !== "off" ? "selected" : ""}" aria-label="${repeat[1]}"><b>${repeat[0]}</b><span>${repeat[1]}</span></button><button data-action="sleep-panel" class="${state.sleepUntil ? "selected" : ""}" aria-label="Hẹn giờ dừng nhạc"><b>◷</b><span id="sleep-status">Hẹn giờ · ${sleepLabel()}</span></button></div>${sleepOptions}<div class="actions"><button class="secondary" data-nav="lyrics">Lời bài hát</button><button class="secondary" data-favorite="${esc(id)}">${state.favorites.has(id) ? "♥" : "♡"}</button></div>${upcoming.length ? `<div class="head"><h2>Phát tiếp</h2><span>${list.length} bài trong danh sách</span></div>${upcoming.map(item).join("")}` : ""}`, { backButton: true, tabs: false });
+    return page("Trình phát", `<div class="art-frame"><img class="art" src="${esc(art(track, true))}" alt="Bìa ${esc(track.title)}"></div><section class="center"><h2>${esc(track.title)}</h2><p class="artist-links">${artistLinks(track)}</p></section>${state.playbackError ? `<div class="card" role="alert"><p>${esc(state.playbackError)}</p><a href="${esc(officialUrl(track))}" target="_blank" rel="noopener noreferrer">Nghe bài này trên Zing MP3 ↗</a></div>` : ""}<input class="seek" id="seek" type="range" min="0" max="1000" value="${Math.round(pct * 10)}" aria-label="Tua bài hát" style="--played:${pct}%"><div class="time"><span id="elapsed">${duration(Math.floor(audio.currentTime))}</span><span id="total">${duration(Math.floor(total || 0))}</span></div><div class="controls"><button data-action="previous" aria-label="Bài trước">‹‹</button><button class="main" data-action="toggle" aria-label="${state.playing ? "Tạm dừng" : "Phát"}">${state.playing ? "Ⅱ" : "▶"}</button><button data-action="next" aria-label="Bài tiếp">››</button></div><div class="player-tools"><button data-action="shuffle" class="${state.shuffle ? "selected" : ""}" aria-label="Phát ngẫu nhiên"><b>⤨</b><span>Ngẫu nhiên</span></button><button data-action="repeat" class="${state.repeatMode !== "off" ? "selected" : ""}" aria-label="${repeat[1]}"><b>${repeat[0]}</b><span>${repeat[1]}</span></button><button data-action="sleep-panel" class="${state.sleepUntil ? "selected" : ""}" aria-label="Hẹn giờ dừng nhạc"><b>◷</b><span id="sleep-status">Hẹn giờ · ${sleepLabel()}</span></button></div>${sleepOptions}<div class="actions"><button class="secondary" data-nav="lyrics">Lời bài hát</button><button class="secondary" data-favorite="${esc(id)}">${state.favorites.has(id) ? "♥" : "♡"}</button></div>${upcoming.length ? `<div class="head"><h2>Phát tiếp</h2><button class="text-link" data-nav="queue">Xem hàng chờ · ${list.length} bài</button></div>${upcoming.map(item).join("")}` : ""}`, { backButton: true, tabs: false });
   }
-  function library() { const list = state.tracks.filter((track) => state.favorites.has(trackId(track))).concat(state.history.filter((track) => !state.favorites.has(trackId(track)))); return page("Thư viện", `<div class="card"><strong>${state.favorites.size}</strong> Bài hát yêu thích trên thiết bị này</div><div class="head"><h2>Đã yêu thích & nghe gần đây</h2></div>${list.length ? list.map(item).join("") : '<div class="empty">Chạm ♡ trên một bài hát để tạo thư viện của bạn.</div>'}`); }
-  function profile() { return page("Cá nhân", `<section class="hero profile-hero"><div class="eyebrow">Âm nhạc của bạn</div><h2>Chào mừng đến CineTune</h2><p>Nhạc Việt bạn yêu thích, luôn trong tầm tay.</p></section><div class="card"><strong>${state.history.length}</strong> Bài hát trong lịch sử nghe</div><div class="card"><strong>${state.favorites.size}</strong> Bài hát đã lưu</div><p class="note">Danh sách này được lưu trên thiết bị của bạn.</p>`); }
+  function library() {
+    const favorites = allTracks().filter((track, index, list) => state.favorites.has(trackId(track)) && list.findIndex((entry) => trackId(entry) === trackId(track)) === index);
+    const playlists = state.myPlaylists.map((list) => `<button class="personal-list" data-my-list="${esc(list.id)}"><span class="list-icon">♫</span><span><strong>${esc(list.name)}</strong><small>${list.tracks.length} bài hát</small></span><b>›</b></button>`).join("");
+    return page("Thư viện", `<div class="section-heading"><div><span class="eyebrow">Bộ sưu tập</span><h2>Playlist của bạn</h2></div></div><form class="inline-create" data-create-playlist><input name="name" maxlength="60" required placeholder="Tên playlist mới"><button type="submit">＋ Tạo</button></form>${playlists || '<div class="empty">Tạo playlist để lưu các bài hát theo ý bạn.</div>'}<div class="section-heading"><div><span class="eyebrow">Đã lưu</span><h2>Bài hát yêu thích</h2></div><span>${favorites.length} bài</span></div>${favorites.length ? favorites.map(item).join("") : '<div class="empty">Chạm ♡ trên bài hát để lưu tại đây.</div>'}`);
+  }
+  function myPlaylist() {
+    const list = selectedList(); if (!list) return page("Playlist", '<div class="empty">Playlist không còn tồn tại.</div>', { backButton: true });
+    return page(list.name, `<section class="list-hero"><span class="list-icon">♫</span><div><span class="eyebrow">Playlist của bạn</span><h2>${esc(list.name)}</h2><p>${list.tracks.length} bài hát · lưu trên thiết bị</p></div></section><div class="list-actions"><button data-play-my-list="${esc(list.id)}">▶ Phát danh sách</button><button data-shuffle-my-list="${esc(list.id)}">⤨ Phát ngẫu nhiên</button><button data-delete-list="${esc(list.id)}">Xóa playlist</button></div>${state.deletingPlaylistId === list.id ? `<div class="delete-confirm"><span>Xóa playlist “${esc(list.name)}”?</span><button data-confirm-delete="${esc(list.id)}">Xóa</button><button data-cancel-delete>Hủy</button></div>` : ""}${list.tracks.length ? list.tracks.map((track, index) => `<div class="editable-track"><b>${index + 1}</b>${item(track)}<button data-move-list="${index}:-1" aria-label="Đưa lên">↑</button><button data-move-list="${index}:1" aria-label="Đưa xuống">↓</button><button data-remove-list="${esc(trackId(track))}" aria-label="Bỏ khỏi playlist">×</button></div>`).join("") : '<div class="empty">Chạm ＋ cạnh bài hát để thêm vào playlist này.</div>'}`, { backButton: true });
+  }
+  function queuePage() {
+    const list = state.queue.length ? state.queue : state.tracks;
+    return page("Hàng chờ phát", `<section class="list-hero"><span class="list-icon">≡</span><div><span class="eyebrow">Thứ tự phát</span><h2>Hàng chờ của bạn</h2><p>${list.length} bài hát · sắp xếp bằng nút lên xuống</p></div></section><div class="list-actions"><button data-action="queue-shuffle">⤨ Xáo trộn thứ tự</button><button data-action="queue-reset">↻ Đặt lại</button></div>${list.map((track, index) => `<div class="editable-track ${trackId(track) === trackId(state.current) ? "is-current" : ""}"><b>${index + 1}</b>${item(track)}<button data-move-queue="${index}:-1" aria-label="Đưa lên">↑</button><button data-move-queue="${index}:1" aria-label="Đưa xuống">↓</button></div>`).join("")}`, { backButton: true });
+  }
+  function artistPage() {
+    const person = state.artistData;
+    const name = person?.name || state.artistAlias;
+    return page("Nghệ sĩ", `${person ? `<section class="artist-hero"><img src="${esc(person.thumbnailM || person.thumbnail || "")}" alt=""><div><span class="eyebrow">Nghệ sĩ</span><h2>${esc(name)}</h2><p>${state.artistTracks.length} bài hát</p></div></section>` : `<div class="empty">${state.artistLoading ? "Đang tải nghệ sĩ…" : esc(state.artistError)}</div>`}${state.artistTracks.length ? `<div class="section-heading"><div><span class="eyebrow">Khám phá</span><h2>Bài hát của ${esc(name)}</h2></div><button class="pill-action" data-play-artist>▶ Phát</button></div>${state.artistTracks.map(item).join("")}${state.artistHasMore ? '<button class="load-more" data-more-artist>Xem thêm bài hát</button>' : ""}` : ""}${state.artistError && person ? `<button class="load-more" data-more-artist>${esc(state.artistError)}</button>` : ""}`, { backButton: true });
+  }
+  function profile() {
+    const stats = `<div class="profile-stats"><div><strong>${state.myPlaylists.length}</strong><span>Playlist</span></div><div><strong>${state.favorites.size}</strong><span>Yêu thích</span></div><div><strong>${state.history.length}</strong><span>Đã nghe</span></div></div>`;
+    const recent = state.history.slice(0, 8).map(item).join("");
+    return page("Cá nhân", `<section class="hero profile-hero"><div class="eyebrow">Không gian âm nhạc</div><h2>Giai điệu của bạn</h2><p>Playlist, bài đã thích và lịch sử nghe trên thiết bị này.</p></section>${stats}<div class="profile-shortcuts"><button data-nav="library"><b>♫</b><span>Playlist & yêu thích</span><i>›</i></button><button data-nav="queue"><b>≡</b><span>Hàng chờ phát</span><i>›</i></button><button data-action="sleep-panel" data-nav="player"><b>◷</b><span>Hẹn giờ nghe</span><i>›</i></button></div><div class="section-heading"><div><span class="eyebrow">Nhật ký</span><h2>Nghe gần đây</h2></div><button class="text-link" data-clear-history>Xóa</button></div>${recent || '<div class="empty">Các bài đã phát sẽ xuất hiện ở đây.</div>'}<p class="note">Dữ liệu cá nhân được lưu trên thiết bị của bạn.</p>`);
+  }
   function lyrics() { const track = state.current || state.tracks[0]; const lines = state.lyricLines.map((line, index) => `<p data-lyric-index="${index}" data-time="${line.time}">${esc(line.text)}</p>`).join(""); return page("Lời bài hát", `<section class="center"><h2>${esc(track?.title || "Đang tải")}</h2><p>${esc(artist(track))}</p></section><div class="lyrics" id="lyric-lines">${state.lyricLoading ? '<p>Đang tải lời bài hát…</p>' : state.lyricError ? `<p>${esc(state.lyricError)}</p>` : lines}</div>`, { backButton: true, tabs: false }); }
   function render(doc) {
     if (!doc?.body) return;
-    const view = { home, search: searchPage, charts, song, player, library, profile, lyrics }[state.route];
+    const view = { home, search: searchPage, charts, song, player, library, profile, lyrics, artist: artistPage, "my-playlist": myPlaylist, queue: queuePage }[state.route] || home;
     const markup = view();
     if (!doc.querySelector("#cinetune-base")) {
       const style = doc.createElement("style");
@@ -273,16 +360,43 @@
       doc.documentElement.style.background = "#0b1020";
       doc.body.style.background = "#0b1020";
     }
-    doc.body.innerHTML = markup.replace(/^<style>[\s\S]*?<\/style><link[^>]*>/, "");
+    doc.body.innerHTML = markup.replace(/^<style>[\s\S]*?<\/style><link[^>]*>/, "") + playlistPicker();
+    doc.querySelectorAll("[data-create-playlist]").forEach((form) => form.addEventListener("submit", (event) => { event.preventDefault(); createPlaylist(new FormData(event.target).get("name") || "", state.addingTrackId); }));
     doc.querySelector("#query")?.addEventListener("input", (event) => search(event.target.value));
     doc.querySelector("#seek")?.addEventListener("input", (event) => { const total = Number.isFinite(audio.duration) ? audio.duration : state.current?.duration; if (total) audio.currentTime = total * Number(event.target.value) / 1000; syncProgress(); });
   }
   function syncProgress() { if (state.route !== "player") return; const doc = frame.contentDocument; const seek = doc?.querySelector("#seek"); const total = Number.isFinite(audio.duration) ? audio.duration : state.current?.duration; if (seek && total) { const played = Math.min(100, audio.currentTime / total * 100); seek.value = String(Math.round(played * 10)); seek.style.setProperty("--played", `${played}%`); } const elapsed = doc?.querySelector("#elapsed"); if (elapsed) elapsed.textContent = duration(Math.floor(audio.currentTime)); const totalLabel = doc?.querySelector("#total"); if (totalLabel && total) totalLabel.textContent = duration(Math.floor(total)); const sleep = doc?.querySelector("#sleep-status"); if (sleep) sleep.textContent = `Hẹn giờ · ${sleepLabel()}`; }
   function click(event) {
-    const target = event.target.closest("[data-nav],[data-play],[data-play-all],[data-favorite],[data-action],[data-back],[data-chart-mode],[data-chart-hour],[data-playlist],[data-playlist-back],[data-retry-top],[data-retry-new],[data-sleep]");
+    const target = event.target.closest("[data-nav],[data-play],[data-play-all],[data-favorite],[data-action],[data-back],[data-chart-mode],[data-chart-hour],[data-playlist],[data-playlist-back],[data-retry-top],[data-retry-new],[data-sleep],[data-artist],[data-add-track],[data-add-to-list],[data-close-picker],[data-my-list],[data-play-my-list],[data-shuffle-my-list],[data-delete-list],[data-confirm-delete],[data-cancel-delete],[data-remove-list],[data-move-list],[data-move-queue],[data-play-artist],[data-more-artist],[data-clear-history]");
     if (!target) return;
     event.preventDefault();
     if (target.dataset.back !== undefined) return back();
+    if (target.dataset.artist) return openArtist(target.dataset.artist);
+    if (target.dataset.addTrack) { state.addingTrackId = target.dataset.addTrack; return repaint(); }
+    if (target.dataset.closePicker !== undefined && (target === event.target || target.tagName === "BUTTON")) { state.addingTrackId = ""; return repaint(); }
+    if (target.dataset.addToList) return addToPlaylist(target.dataset.addToList, state.addingTrackId);
+    if (target.dataset.myList) { state.selectedPlaylist = target.dataset.myList; localStorage.setItem("cinetune-selected-playlist", state.selectedPlaylist); return go("my-playlist"); }
+    if (target.dataset.playMyList || target.dataset.shuffleMyList) {
+      const list = state.myPlaylists.find((entry) => entry.id === (target.dataset.playMyList || target.dataset.shuffleMyList));
+      if (!list?.tracks.length) return;
+      setQueue(list.tracks);
+      if (target.dataset.shuffleMyList) { state.shuffle = true; localStorage.setItem("cinetune-shuffle", "true"); shuffleQueue(); }
+      go("player"); return play(trackId(state.queue[0]));
+    }
+    if (target.dataset.deleteList) { state.deletingPlaylistId = target.dataset.deleteList; return repaint(); }
+    if (target.dataset.cancelDelete !== undefined) { state.deletingPlaylistId = ""; return repaint(); }
+    if (target.dataset.confirmDelete) { state.myPlaylists = state.myPlaylists.filter((entry) => entry.id !== target.dataset.confirmDelete); state.selectedPlaylist = ""; state.deletingPlaylistId = ""; localStorage.removeItem("cinetune-selected-playlist"); save(); return go("library"); }
+    if (target.dataset.removeList) { const list = selectedList(); if (list) { list.tracks = list.tracks.filter((entry) => trackId(entry) !== target.dataset.removeList); save(); repaint(); } return; }
+    if (target.dataset.moveList || target.dataset.moveQueue) {
+      const [index, direction] = (target.dataset.moveList || target.dataset.moveQueue).split(":").map(Number);
+      const list = target.dataset.moveList ? selectedList()?.tracks : state.queue;
+      const next = index + direction;
+      if (list && next >= 0 && next < list.length) { [list[index], list[next]] = [list[next], list[index]]; save(); repaint(); }
+      return;
+    }
+    if (target.dataset.playArtist !== undefined && state.artistTracks.length) { setQueue(state.artistTracks); go("player"); return play(trackId(state.queue[0])); }
+    if (target.dataset.moreArtist !== undefined) return loadArtistSongs(state.artistPage + 1);
+    if (target.dataset.clearHistory !== undefined) { state.history = []; save(); return repaint(); }
     if (target.dataset.chartHour !== undefined) { state.chartHour = Number(target.dataset.chartHour); return repaint(); }
     if (target.dataset.chartMode) {
       state.chartMode = target.dataset.chartMode; state.playlistId = ""; state.topError = ""; repaint();
@@ -298,30 +412,33 @@
     if (target.dataset.playAll) {
       const list = target.dataset.playAll === "new" ? state.releaseTracks : target.dataset.playAll === "playlist" ? state.playlistTracks : state.tracks;
       if (!list.length) return;
-      state.queue = list; go("player"); return play(trackId(list[0]));
+      setQueue(list); go("player"); return play(trackId(state.queue[0]));
     }
     if (target.dataset.nav) {
+      if (target.dataset.action === "sleep-panel") state.showSleepOptions = true;
       if (target.dataset.track) {
         const track = allTracks().find((item) => trackId(item) === target.dataset.track);
-        if (track) { state.current = track; state.lyricId = null; state.queue = queueForRoute(); }
+        if (track) { state.current = track; state.lyricId = null; setQueue(queueForRoute()); }
       }
       return go(target.dataset.nav);
     }
     if (target.dataset.play) {
-      if (state.route !== "player" && state.route !== "song") state.queue = target.dataset.source === "new" ? state.releaseTracks : queueForRoute();
+      if (state.route !== "player" && state.route !== "song" && state.route !== "queue") setQueue(target.dataset.source === "new" ? state.releaseTracks : queueForRoute());
       go("player"); return play(target.dataset.play);
     }
     if (target.dataset.favorite) return favorite(target.dataset.favorite);
     if (target.dataset.action === "open-new") { state.chartMode = "new"; go("charts"); return loadNewRelease(); }
     if (target.dataset.action === "dismiss") { miniDismissed = true; return repaint(); }
     if (target.dataset.action === "shuffle") return toggleShuffle();
+    if (target.dataset.action === "queue-shuffle") { state.shuffle = true; localStorage.setItem("cinetune-shuffle", "true"); shuffleQueue(); return repaint(); }
+    if (target.dataset.action === "queue-reset") { setQueue(state.tracks); return repaint(); }
     if (target.dataset.action === "repeat") return setRepeatMode();
     if (target.dataset.action === "sleep-panel") { state.showSleepOptions = !state.showSleepOptions; return repaint(); }
     if (target.dataset.action === "toggle") return toggle();
     if (target.dataset.action === "next") return advance(1);
     if (target.dataset.action === "previous") return advance(-1);
   }
-  function load() { state.route = route(); frame.setAttribute("aria-busy", "false"); repaint(); if (state.route.startsWith("lyrics")) loadLyrics(); if (state.route === "charts" && state.chartMode === "top100") loadTop100(); if (state.route === "home" || (state.route === "charts" && state.chartMode === "new")) loadNewRelease(); }
+  function load() { state.route = route(); frame.setAttribute("aria-busy", "false"); repaint(); if (state.route.startsWith("lyrics")) loadLyrics(); if (state.route === "charts" && state.chartMode === "top100") loadTop100(); if (state.route === "home" || (state.route === "charts" && state.chartMode === "new")) loadNewRelease(); if (state.route === "artist" && state.artistAlias && !state.artistData && !state.artistLoading) openArtist(state.artistAlias); }
   frame.addEventListener("load", () => { frame.setAttribute("aria-busy", "false"); const doc = frame.contentDocument; render(doc); doc?.addEventListener("click", click, true); });
   audio.addEventListener("play", () => { state.playing = true; repaint(); }); audio.addEventListener("pause", () => { state.playing = false; repaint(); }); audio.addEventListener("ended", () => advance(1, true));
   audio.addEventListener("timeupdate", () => { stopForSleep(); syncProgress(); if (state.route !== "lyrics") return; const doc = frame.contentDocument; const index = state.lyricLines.findLastIndex((line) => line.time <= audio.currentTime * 1000); const active = doc?.querySelector(".lyrics .active"); const next = doc?.querySelector(`[data-lyric-index="${index}"]`); if (next && next !== active) { active?.classList.remove("active"); next.classList.add("active"); next.scrollIntoView({ block: "center", behavior: "smooth" }); } });
