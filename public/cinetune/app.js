@@ -103,10 +103,11 @@
     state.current = track; miniDismissed = false; state.lyricId = null; state.history = [track, ...state.history.filter((item) => trackId(item) !== id)].slice(0, 20); save();
     state.playbackError = "";
     try {
-      await connectVietnam();
-      const source = await get(`/api/song?id=${encodeURIComponent(id)}`);
+      const native = window.CineTuneNative;
+      if (!native?.getSong) await connectVietnam();
+      const source = native?.getSong ? JSON.parse(native.getSong(id)) : await get(`/api/song?id=${encodeURIComponent(id)}`);
       if (source.err !== 0 || !source.data?.["128"]) throw new Error(source.msg || "Bài hát không có nguồn phát.");
-      audio.src = `${api}/api/song/stream?id=${encodeURIComponent(id)}`;
+      audio.src = native?.getSong ? source.data["128"] : `${api}/api/song/stream?id=${encodeURIComponent(id)}`;
       await audio.play(); state.playing = true;
     } catch (error) { state.playing = false; state.playbackError = "Chưa phát được bài này. Bạn có thể nghe trên Zing MP3."; }
     repaint();
