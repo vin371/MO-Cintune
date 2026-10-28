@@ -257,7 +257,26 @@
   function library() { const list = state.tracks.filter((track) => state.favorites.has(trackId(track))).concat(state.history.filter((track) => !state.favorites.has(trackId(track)))); return page("Thư viện", `<div class="card"><strong>${state.favorites.size}</strong> Bài hát yêu thích trên thiết bị này</div><div class="head"><h2>Đã yêu thích & nghe gần đây</h2></div>${list.length ? list.map(item).join("") : '<div class="empty">Chạm ♡ trên một bài hát để tạo thư viện của bạn.</div>'}`); }
   function profile() { return page("Cá nhân", `<section class="hero profile-hero"><div class="eyebrow">Âm nhạc của bạn</div><h2>Chào mừng đến CineTune</h2><p>Nhạc Việt bạn yêu thích, luôn trong tầm tay.</p></section><div class="card"><strong>${state.history.length}</strong> Bài hát trong lịch sử nghe</div><div class="card"><strong>${state.favorites.size}</strong> Bài hát đã lưu</div><p class="note">Danh sách này được lưu trên thiết bị của bạn.</p>`); }
   function lyrics() { const track = state.current || state.tracks[0]; const lines = state.lyricLines.map((line, index) => `<p data-lyric-index="${index}" data-time="${line.time}">${esc(line.text)}</p>`).join(""); return page("Lời bài hát", `<section class="center"><h2>${esc(track?.title || "Đang tải")}</h2><p>${esc(artist(track))}</p></section><div class="lyrics" id="lyric-lines">${state.lyricLoading ? '<p>Đang tải lời bài hát…</p>' : state.lyricError ? `<p>${esc(state.lyricError)}</p>` : lines}</div>`, { backButton: true, tabs: false }); }
-  function render(doc) { if (!doc?.body) return; const view = { home, search: searchPage, charts, song, player, library, profile, lyrics }[state.route]; doc.body.innerHTML = view(); doc.querySelector("#query")?.addEventListener("input", (event) => search(event.target.value)); doc.querySelector("#seek")?.addEventListener("input", (event) => { const total = Number.isFinite(audio.duration) ? audio.duration : state.current?.duration; if (total) audio.currentTime = total * Number(event.target.value) / 1000; syncProgress(); }); }
+  function render(doc) {
+    if (!doc?.body) return;
+    const view = { home, search: searchPage, charts, song, player, library, profile, lyrics }[state.route];
+    const markup = view();
+    if (!doc.querySelector("#cinetune-base")) {
+      const style = doc.createElement("style");
+      style.id = "cinetune-base";
+      style.textContent = markup.match(/^<style>([\s\S]*?)<\/style>/)?.[1] || "";
+      doc.head.append(style);
+      const theme = doc.createElement("link");
+      theme.rel = "stylesheet";
+      theme.href = "/cinetune/theme.css?v=3";
+      doc.head.append(theme);
+      doc.documentElement.style.background = "#0b1020";
+      doc.body.style.background = "#0b1020";
+    }
+    doc.body.innerHTML = markup.replace(/^<style>[\s\S]*?<\/style><link[^>]*>/, "");
+    doc.querySelector("#query")?.addEventListener("input", (event) => search(event.target.value));
+    doc.querySelector("#seek")?.addEventListener("input", (event) => { const total = Number.isFinite(audio.duration) ? audio.duration : state.current?.duration; if (total) audio.currentTime = total * Number(event.target.value) / 1000; syncProgress(); });
+  }
   function syncProgress() { if (state.route !== "player") return; const doc = frame.contentDocument; const seek = doc?.querySelector("#seek"); const total = Number.isFinite(audio.duration) ? audio.duration : state.current?.duration; if (seek && total) { const played = Math.min(100, audio.currentTime / total * 100); seek.value = String(Math.round(played * 10)); seek.style.setProperty("--played", `${played}%`); } const elapsed = doc?.querySelector("#elapsed"); if (elapsed) elapsed.textContent = duration(Math.floor(audio.currentTime)); const totalLabel = doc?.querySelector("#total"); if (totalLabel && total) totalLabel.textContent = duration(Math.floor(total)); const sleep = doc?.querySelector("#sleep-status"); if (sleep) sleep.textContent = `Hẹn giờ · ${sleepLabel()}`; }
   function click(event) {
     const target = event.target.closest("[data-nav],[data-play],[data-play-all],[data-favorite],[data-action],[data-back],[data-chart-mode],[data-chart-hour],[data-playlist],[data-playlist-back],[data-retry-top],[data-retry-new],[data-sleep]");
@@ -308,5 +327,5 @@
   audio.addEventListener("timeupdate", () => { stopForSleep(); syncProgress(); if (state.route !== "lyrics") return; const doc = frame.contentDocument; const index = state.lyricLines.findLastIndex((line) => line.time <= audio.currentTime * 1000); const active = doc?.querySelector(".lyrics .active"); const next = doc?.querySelector(`[data-lyric-index="${index}"]`); if (next && next !== active) { active?.classList.remove("active"); next.classList.add("active"); next.scrollIntoView({ block: "center", behavior: "smooth" }); } });
   document.addEventListener("visibilitychange", stopForSleep);
   audio.addEventListener("loadedmetadata", syncProgress);
-  window.addEventListener("hashchange", load); if (!location.hash) location.hash = "home"; else load(); frame.src = "about:blank"; connectVietnam(); loadTrending();
+  window.addEventListener("hashchange", load); if (!location.hash) location.hash = "home"; else load(); frame.srcdoc = '<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><style>html,body{margin:0;min-height:100%;background:#0b1020;color:#f7f8fd}</style></head><body></body></html>'; connectVietnam(); loadTrending();
 })();
