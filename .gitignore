@@ -1,2 +1,5 @@
 node_modules/
-.env
+tunnel.log
+tunnel.out.log
+server.out.log
+server.err.log
