@@ -9,7 +9,7 @@ app.use((_req, res, next) => { res.setHeader('Access-Control-Allow-Origin', '*')
 app.use(express.json());
 app.get('/download/CineTune-Android.apk', (_req, res) => {
   res.setHeader('Cache-Control', 'no-store');
-  res.download(path.join(__dirname, 'public', 'CineTune-Android.apk'), 'CineTune-Android-1.5.apk');
+  res.download(path.join(__dirname, 'public', 'CineTune-Android.apk'), 'CineTune-Android-1.6.apk');
 });
 app.use(express.static(path.join(__dirname, 'public')));
 

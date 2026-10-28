@@ -4,6 +4,43 @@
   let vietnamConnection;
   const frame = document.querySelector("#screen");
   const audio = new Audio();
+  const nativePlayback = window.CineTunePlayback?.command && window.CineTunePlayback?.state ? window.CineTunePlayback : null;
+  let nativePosition = 0;
+  let nativeDuration = 0;
+  let nativeReady = false;
+  const playbackPosition = () => nativePlayback ? nativePosition : audio.currentTime;
+  const playbackDuration = () => nativePlayback ? (nativeDuration || state.current?.duration || 0) : (Number.isFinite(audio.duration) ? audio.duration : state.current?.duration || 0);
+  const nativeCommand = (action, value = "") => { try { nativePlayback?.command(action, String(value)); } catch {} };
+  function syncNativePlayback() {
+    if (!nativePlayback) return;
+    let status;
+    try { status = JSON.parse(nativePlayback.state()); } catch { return; }
+    if (!status.id) return;
+    const changed = trackId(state.current) !== status.id;
+    const wasPlaying = state.playing;
+    const oldError = state.playbackError;
+    if (changed) {
+      const track = allTracks().find((item) => trackId(item) === status.id);
+      if (track) { state.current = track; state.lyricId = null; state.history = [track, ...state.history.filter((item) => trackId(item) !== status.id)].slice(0, 20); save(); }
+    }
+    nativeReady = Boolean(status.ready);
+    nativePosition = Math.max(0, Number(status.position) || 0) / 1000;
+    nativeDuration = Math.max(0, Number(status.duration) || 0) / 1000;
+    state.playing = Boolean(status.playing);
+    state.playbackError = status.error || "";
+    state.sleepUntil = Number(status.sleepUntil) || 0;
+    if (changed || wasPlaying !== state.playing || oldError !== state.playbackError) repaint();
+    else syncProgress();
+    syncLyrics();
+  }
+  function syncLyrics() {
+    if (state.route !== "lyrics") return;
+    const doc = frame.contentDocument;
+    const index = state.lyricLines.findLastIndex((line) => line.time <= playbackPosition() * 1000);
+    const active = doc?.querySelector(".lyrics .active");
+    const next = doc?.querySelector(`[data-lyric-index="${index}"]`);
+    if (next && next !== active) { active?.classList.remove("active"); next.classList.add("active"); next.scrollIntoView({ block: "center", behavior: "smooth" }); }
+  }
   const stored = (key, fallback) => { try { return JSON.parse(localStorage.getItem(key)) ?? fallback; } catch { return fallback; } };
   const state = {
     route: "", tracks: [], chartData: null, chartHour: 23, results: [],
@@ -60,7 +97,7 @@
   }
   async function loadTrending() {
     state.loading = true; repaint();
-    try { const payload = await get("/api/chart-home"); state.tracks = payload?.data?.RTChart?.items || []; state.chartData = payload?.data?.RTChart?.chart || null; if (!state.current) state.current = state.tracks[0]; }
+    try { const payload = await get("/api/chart-home"); state.tracks = payload?.data?.RTChart?.items || []; state.chartData = payload?.data?.RTChart?.chart || null; if (!state.current) state.current = state.tracks[0]; if (nativePlayback && state.queue.length === 1 && state.tracks.length > 1) { state.queue = [state.queue[0], ...state.tracks.filter((item) => trackId(item) !== trackId(state.queue[0]))]; save(); nativeCommand("updateQueue", JSON.stringify({ tracks: state.queue.map(nativeTrack), repeat: state.repeatMode })); } }
     catch (error) { state.error = "Chưa tải được danh sách bài hát. Hãy thử lại sau."; }
     finally { state.loading = false; repaint(); }
   }
@@ -120,7 +157,9 @@
       state.queue = [first, ...rest];
     }
     save();
+    if (nativePlayback && state.queue.length) nativeCommand("updateQueue", JSON.stringify({ tracks: state.queue.map(nativeTrack), repeat: state.repeatMode }));
   }
+  const nativeTrack = (track) => ({ id: trackId(track), title: track.title || "Bài hát", artist: artist(track) });
   function shuffleQueue(playNext = false) {
     const list = state.queue.length > 1 ? state.queue : state.tracks.length > 1 ? state.tracks : state.queue;
     const currentId = trackId(state.current);
@@ -134,6 +173,7 @@
     for (let i = remaining.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [remaining[i], remaining[j]] = [remaining[j], remaining[i]]; }
     state.queue = [state.current, next, ...remaining].filter(Boolean);
     save();
+    if (nativePlayback) nativeCommand("updateQueue", JSON.stringify({ tracks: state.queue.map(nativeTrack), repeat: state.repeatMode }));
     if (playNext) play(trackId(next));
     return true;
   }
@@ -150,6 +190,7 @@
     state.addingTrackId = ""; save(); repaint();
   }
   function advance(direction, fromEnd = false) {
+    if (nativePlayback) { nativeCommand(direction > 0 ? "next" : "previous"); return; }
     const list = state.queue.length ? state.queue : state.tracks;
     if (!list.length) { state.playing = false; repaint(); return; }
     if (fromEnd && state.repeatMode === "one") { audio.currentTime = 0; audio.play().catch(() => { state.playing = false; repaint(); }); return; }
@@ -175,10 +216,12 @@
   function setRepeatMode() {
     state.repeatMode = { all: "one", one: "off", off: "all" }[state.repeatMode] || "all";
     localStorage.setItem("cinetune-repeat", state.repeatMode);
+    nativeCommand("repeat", state.repeatMode);
     repaint();
   }
   let sleepTimeout;
   function stopForSleep() {
+    if (nativePlayback) return;
     if (!state.sleepUntil || Date.now() < state.sleepUntil) return;
     clearTimeout(sleepTimeout);
     state.sleepUntil = 0;
@@ -189,6 +232,7 @@
   function setSleepTimer(minutes) {
     clearTimeout(sleepTimeout);
     state.sleepUntil = minutes ? Date.now() + minutes * 60000 : 0;
+    nativeCommand("sleep", state.sleepUntil);
     if (minutes) sleepTimeout = setTimeout(stopForSleep, minutes * 60000);
     repaint();
   }
@@ -228,6 +272,14 @@
     const track = allTracks().find((item) => trackId(item) === id); if (!track) return;
     state.current = track; miniDismissed = false; state.lyricId = null; state.history = [track, ...state.history.filter((item) => trackId(item) !== id)].slice(0, 20); save();
     state.playbackError = "";
+    if (nativePlayback) {
+      const selected = state.queue.length ? state.queue : [track];
+      const list = selected.length > 1 ? selected : [track, ...state.tracks.filter((item) => trackId(item) !== id)];
+      state.queue = list; save();
+      nativeCommand("playQueue", JSON.stringify({ tracks: list.map(nativeTrack), startId: id, repeat: state.repeatMode }));
+      nativePosition = 0; nativeDuration = track.duration || 0; nativeReady = false; state.playing = true; repaint();
+      return;
+    }
     try {
       const native = window.CineTuneNative;
       if (!native?.getSong) await connectVietnam();
@@ -252,6 +304,11 @@
     finally { if (state.lyricId === id) { state.lyricLoading = false; repaint(); } }
   }
   async function toggle() {
+    if (nativePlayback) {
+      if (!state.current) return play(trackId(state.tracks[0]));
+      if (!nativeReady && !state.playing) return play(trackId(state.current));
+      nativeCommand("toggle"); state.playing = !state.playing; repaint(); return;
+    }
     if ((!state.current && state.tracks[0]) || (state.current && !audio.src)) return play(trackId(state.current || state.tracks[0]));
     if (audio.paused) { await audio.play(); state.playing = true; } else { audio.pause(); state.playing = false; }
     repaint();
@@ -292,7 +349,7 @@
   }
   let miniDismissed = false;
   function mini() {
-    if (!state.current || miniDismissed || !["home", "search", "charts", "library", "profile"].includes(state.route) || !audio.src) return "";
+    if (!state.current || miniDismissed || !["home", "search", "charts", "library", "profile"].includes(state.route) || !(nativePlayback ? nativeReady || state.playing : audio.src)) return "";
     return `<div class="mini"><button class="mini-open" data-nav="player"><img src="${esc(art(state.current))}" alt=""><span><strong>${esc(state.current.title)}</strong><small>${esc(artist(state.current))}</small></span></button><button class="mini-toggle" data-action="toggle" aria-label="${state.playing ? "Tạm dừng" : "Tiếp tục"}">${state.playing ? "Ⅱ" : "▶"}</button><button class="mini-close" data-action="dismiss" aria-label="Đóng thanh nhạc">×</button></div>`;
   }
   function page(title, body, options = {}) {
@@ -327,14 +384,14 @@
     const track = state.current || state.tracks[0];
     if (!track) return page("Trình phát", '<div class="empty">Đang tải trình phát…</div>', { backButton: true, tabs: false });
     const id = trackId(track);
-    const total = Number.isFinite(audio.duration) ? audio.duration : track.duration;
-    const pct = total ? Math.min(100, audio.currentTime / total * 100) : 0;
+    const total = playbackDuration();
+    const pct = total ? Math.min(100, playbackPosition() / total * 100) : 0;
     const list = state.queue.length ? state.queue : state.tracks;
     const index = list.findIndex((item) => trackId(item) === id);
     const upcoming = list.length > 1 ? Array.from({ length: Math.min(3, list.length - 1) }, (_, offset) => list[(index + offset + 1 + list.length) % list.length]) : [];
     const repeat = { all: ["↻", "Lặp danh sách"], one: ["↻₁", "Lặp một bài"], off: ["↻", "Không lặp"] }[state.repeatMode] || ["↻", "Lặp danh sách"];
     const sleepOptions = state.showSleepOptions ? `<div class="sleep-options">${[[0, "Tắt"], [15, "15 phút"], [30, "30 phút"], [60, "60 phút"]].map(([minutes, label]) => `<button data-sleep="${minutes}" class="${(state.sleepUntil > 0 && Math.ceil((state.sleepUntil - Date.now()) / 60000) === minutes) || (!state.sleepUntil && minutes === 0) ? "selected" : ""}">${label}</button>`).join("")}</div>` : "";
-    return page("Trình phát", `<div class="art-frame"><img class="art" src="${esc(art(track, true))}" alt="Bìa ${esc(track.title)}"></div><section class="center"><h2>${esc(track.title)}</h2><p class="artist-links">${artistLinks(track)}</p></section>${state.playbackError ? `<div class="card" role="alert"><p>${esc(state.playbackError)}</p><a href="${esc(officialUrl(track))}" target="_blank" rel="noopener noreferrer">Nghe bài này trên Zing MP3 ↗</a></div>` : ""}<input class="seek" id="seek" type="range" min="0" max="1000" value="${Math.round(pct * 10)}" aria-label="Tua bài hát" style="--played:${pct}%"><div class="time"><span id="elapsed">${duration(Math.floor(audio.currentTime))}</span><span id="total">${duration(Math.floor(total || 0))}</span></div><div class="controls"><button data-action="previous" aria-label="Bài trước">‹‹</button><button class="main" data-action="toggle" aria-label="${state.playing ? "Tạm dừng" : "Phát"}">${state.playing ? "Ⅱ" : "▶"}</button><button data-action="next" aria-label="Bài tiếp">››</button></div><div class="player-tools"><button data-action="shuffle" class="${state.shuffle ? "selected" : ""}" aria-label="Phát ngẫu nhiên"><b>⤨</b><span>Ngẫu nhiên</span></button><button data-action="repeat" class="${state.repeatMode !== "off" ? "selected" : ""}" aria-label="${repeat[1]}"><b>${repeat[0]}</b><span>${repeat[1]}</span></button><button data-action="sleep-panel" class="${state.sleepUntil ? "selected" : ""}" aria-label="Hẹn giờ dừng nhạc"><b>◷</b><span id="sleep-status">Hẹn giờ · ${sleepLabel()}</span></button></div>${sleepOptions}<div class="actions"><button class="secondary" data-favorite="${esc(id)}">${state.favorites.has(id) ? "♥" : "♡"}</button></div>${upcoming.length ? `<div class="head"><h2>Phát tiếp</h2><button class="text-link" data-nav="queue">Xem hàng chờ · ${list.length} bài</button></div>${upcoming.map(item).join("")}` : ""}`, { backButton: true, tabs: false });
+    return page("Trình phát", `<div class="art-frame"><img class="art" src="${esc(art(track, true))}" alt="Bìa ${esc(track.title)}"></div><section class="center"><h2>${esc(track.title)}</h2><p class="artist-links">${artistLinks(track)}</p></section>${state.playbackError ? `<div class="card" role="alert"><p>${esc(state.playbackError)}</p><a href="${esc(officialUrl(track))}" target="_blank" rel="noopener noreferrer">Nghe bài này trên Zing MP3 ↗</a></div>` : ""}<input class="seek" id="seek" type="range" min="0" max="1000" value="${Math.round(pct * 10)}" aria-label="Tua bài hát" style="--played:${pct}%"><div class="time"><span id="elapsed">${duration(Math.floor(playbackPosition()))}</span><span id="total">${duration(Math.floor(total || 0))}</span></div><div class="controls"><button data-action="previous" aria-label="Bài trước">‹‹</button><button class="main" data-action="toggle" aria-label="${state.playing ? "Tạm dừng" : "Phát"}">${state.playing ? "Ⅱ" : "▶"}</button><button data-action="next" aria-label="Bài tiếp">››</button></div><div class="player-tools"><button data-action="shuffle" class="${state.shuffle ? "selected" : ""}" aria-label="Phát ngẫu nhiên"><b>⤨</b><span>Ngẫu nhiên</span></button><button data-action="repeat" class="${state.repeatMode !== "off" ? "selected" : ""}" aria-label="${repeat[1]}"><b>${repeat[0]}</b><span>${repeat[1]}</span></button><button data-action="sleep-panel" class="${state.sleepUntil ? "selected" : ""}" aria-label="Hẹn giờ dừng nhạc"><b>◷</b><span id="sleep-status">Hẹn giờ · ${sleepLabel()}</span></button></div>${sleepOptions}<div class="actions"><button class="secondary" data-favorite="${esc(id)}">${state.favorites.has(id) ? "♥" : "♡"}</button></div>${upcoming.length ? `<div class="head"><h2>Phát tiếp</h2><button class="text-link" data-nav="queue">Xem hàng chờ · ${list.length} bài</button></div>${upcoming.map(item).join("")}` : ""}`, { backButton: true, tabs: false });
   }
   function library() {
     const favorites = allTracks().filter((track, index, list) => state.favorites.has(trackId(track)) && list.findIndex((entry) => trackId(entry) === trackId(track)) === index);
@@ -379,9 +436,9 @@
     doc.body.innerHTML = markup.replace(/^<style>[\s\S]*?<\/style><link[^>]*>/, "") + playlistPicker();
     doc.querySelectorAll("[data-create-playlist]").forEach((form) => form.addEventListener("submit", (event) => { event.preventDefault(); createPlaylist(new FormData(event.target).get("name") || "", state.addingTrackId); }));
     doc.querySelector("#query")?.addEventListener("input", (event) => search(event.target.value));
-    doc.querySelector("#seek")?.addEventListener("input", (event) => { const total = Number.isFinite(audio.duration) ? audio.duration : state.current?.duration; if (total) audio.currentTime = total * Number(event.target.value) / 1000; syncProgress(); });
+    doc.querySelector("#seek")?.addEventListener("input", (event) => { const total = playbackDuration(); if (total) { const position = total * Number(event.target.value) / 1000; if (nativePlayback) { nativePosition = position; nativeCommand("seek", Math.round(position * 1000)); } else audio.currentTime = position; } syncProgress(); });
   }
-  function syncProgress() { if (state.route !== "player") return; const doc = frame.contentDocument; const seek = doc?.querySelector("#seek"); const total = Number.isFinite(audio.duration) ? audio.duration : state.current?.duration; if (seek && total) { const played = Math.min(100, audio.currentTime / total * 100); seek.value = String(Math.round(played * 10)); seek.style.setProperty("--played", `${played}%`); } const elapsed = doc?.querySelector("#elapsed"); if (elapsed) elapsed.textContent = duration(Math.floor(audio.currentTime)); const totalLabel = doc?.querySelector("#total"); if (totalLabel && total) totalLabel.textContent = duration(Math.floor(total)); const sleep = doc?.querySelector("#sleep-status"); if (sleep) sleep.textContent = `Hẹn giờ · ${sleepLabel()}`; }
+  function syncProgress() { if (state.route !== "player") return; const doc = frame.contentDocument; const seek = doc?.querySelector("#seek"); const total = playbackDuration(); if (seek && total) { const played = Math.min(100, playbackPosition() / total * 100); seek.value = String(Math.round(played * 10)); seek.style.setProperty("--played", `${played}%`); } const elapsed = doc?.querySelector("#elapsed"); if (elapsed) elapsed.textContent = duration(Math.floor(playbackPosition())); const totalLabel = doc?.querySelector("#total"); if (totalLabel && total) totalLabel.textContent = duration(Math.floor(total)); const sleep = doc?.querySelector("#sleep-status"); if (sleep) sleep.textContent = `Hẹn giờ · ${sleepLabel()}`; }
   function bindSwipe(doc) {
     let start = null;
     const finish = (origin, dx, dy) => {
@@ -444,7 +501,7 @@
       const [index, direction] = (target.dataset.moveList || target.dataset.moveQueue).split(":").map(Number);
       const list = target.dataset.moveList ? selectedList()?.tracks : state.queue;
       const next = index + direction;
-      if (list && next >= 0 && next < list.length) { [list[index], list[next]] = [list[next], list[index]]; save(); repaint(); }
+      if (list && next >= 0 && next < list.length) { [list[index], list[next]] = [list[next], list[index]]; save(); if (target.dataset.moveQueue && nativePlayback) nativeCommand("updateQueue", JSON.stringify({ tracks: state.queue.map(nativeTrack), repeat: state.repeatMode })); repaint(); }
       return;
     }
     if (target.dataset.playArtist !== undefined && state.artistTracks.length) { setQueue(state.artistTracks); go("player"); return play(trackId(state.queue[0])); }
@@ -494,8 +551,8 @@
   function load() { state.route = route(); frame.setAttribute("aria-busy", "false"); repaint(); if (state.route.startsWith("lyrics")) loadLyrics(); if (state.route === "charts" && state.chartMode === "top100") loadTop100(); if (state.route === "home" || (state.route === "charts" && state.chartMode === "new")) loadNewRelease(); if (state.route === "artist" && state.artistAlias && !state.artistData && !state.artistLoading) openArtist(state.artistAlias); }
   frame.addEventListener("load", () => { frame.setAttribute("aria-busy", "false"); const doc = frame.contentDocument; render(doc); doc?.addEventListener("click", click, true); if (doc) bindSwipe(doc); });
   audio.addEventListener("play", () => { state.playing = true; repaint(); }); audio.addEventListener("pause", () => { state.playing = false; repaint(); }); audio.addEventListener("ended", () => advance(1, true));
-  audio.addEventListener("timeupdate", () => { stopForSleep(); syncProgress(); if (state.route !== "lyrics") return; const doc = frame.contentDocument; const index = state.lyricLines.findLastIndex((line) => line.time <= audio.currentTime * 1000); const active = doc?.querySelector(".lyrics .active"); const next = doc?.querySelector(`[data-lyric-index="${index}"]`); if (next && next !== active) { active?.classList.remove("active"); next.classList.add("active"); next.scrollIntoView({ block: "center", behavior: "smooth" }); } });
+  audio.addEventListener("timeupdate", () => { stopForSleep(); syncProgress(); syncLyrics(); });
   document.addEventListener("visibilitychange", stopForSleep);
   audio.addEventListener("loadedmetadata", syncProgress);
-  window.addEventListener("hashchange", load); if (!location.hash) location.hash = "home"; else load(); frame.srcdoc = '<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><style>html,body{margin:0;min-height:100%;background:#0b1020;color:#f7f8fd}</style></head><body></body></html>'; connectVietnam(); loadTrending();
+  window.addEventListener("hashchange", load); if (!location.hash) location.hash = "home"; else load(); frame.srcdoc = '<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><style>html,body{margin:0;min-height:100%;background:#0b1020;color:#f7f8fd}</style></head><body></body></html>'; connectVietnam(); loadTrending(); if (nativePlayback) { syncNativePlayback(); setInterval(syncNativePlayback, 700); }
 })();
