@@ -7,3 +7,6 @@ runner.out.log
 runner.err.log
 preview.out.log
 preview.err.log
+android/.gradle/
+android/build/
+android/app/build/

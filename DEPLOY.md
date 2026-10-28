@@ -10,8 +10,6 @@ Check `/health` first, then open `/cinetune/#home`.
 
 ## Android
 
-Build the companion Android project with the actual Render URL:
+Build the companion Android project from `android/` with `gradle :app:assembleDebug`.
 
-`gradle :app:assembleDebug -PcinetuneUrl=https://YOUR-SERVICE.onrender.com/cinetune/#home`
-
-The APK reads the same hosted web UI, so web updates on Render become available without rebuilding the APK. A new build is needed if the hosting URL changes.
+The current APK is available at `/download/CineTune-Android.apk`. It opens the hosted web UI, so screen changes appear without reinstalling. Changes to the Android icon or native code require a new APK. Install version 1.5 over version 1.4 to keep local app data.
