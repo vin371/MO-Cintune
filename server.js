@@ -5,6 +5,7 @@ const { ZingMp3 } = require('./dist');
 const app = express();
 const PORT = process.env.PORT || 5555;
 
+app.use((_req, res, next) => { res.setHeader('Access-Control-Allow-Origin', '*'); next(); });
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 

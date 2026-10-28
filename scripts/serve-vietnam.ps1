@@ -45,17 +45,16 @@ try {
         if ($script:tunnel.HasExited) { throw 'Đường hầm HTTPS không khởi động được.' }
     }
     if (-not $url) { throw 'Không nhận được địa chỉ HTTPS.' }
-    $siteUrl = "$url/cinetune/#home"
-    $current = (Get-Content $config -Raw | ConvertFrom-Json).siteUrl
-    if ($current -ne $siteUrl) {
-        @{ siteUrl = $siteUrl } | ConvertTo-Json | Set-Content $config -Encoding utf8
+    $current = Get-Content $config -Raw | ConvertFrom-Json
+    if ($current.vietnamApiUrl -ne $url) {
+        @{ siteUrl = 'https://cinetune-api.onrender.com/cinetune/#home'; vietnamApiUrl = $url } | ConvertTo-Json | Set-Content $config -Encoding utf8
         git -C $repo add config/android.json
         git -C $repo commit -m 'Update Vietnam music server URL' | Out-Null
         if ($LASTEXITCODE -ne 0) { throw 'Không lưu được địa chỉ mới.' }
         git -C $repo push origin main
         if ($LASTEXITCODE -ne 0) { throw 'Không cập nhật được địa chỉ trên GitHub.' }
     }
-    Write-Host "CineTune đang chạy: $siteUrl"
+    Write-Host "CineTune Vietnam API đang chạy: $url"
     while ($true) {
         Start-Sleep -Seconds 60
         if ($script:tunnel.HasExited) { throw 'Đường hầm HTTPS đã dừng. Chạy lại script để lấy địa chỉ mới.' }

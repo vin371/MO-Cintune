@@ -1,6 +1,7 @@
 (() => {
   const routes = { home: "trang_ch_cinetune/code.html", search: "t_m_ki_m_cinetune/code.html", charts: "charts", song: "chi_ti_t_b_i_h_t_cinetune/code.html", player: "tr_nh_ph_t_nh_c_cinetune/code.html", library: "th_vi_n_cinetune/code.html", profile: "c_nh_n_cinetune/code.html", lyrics: "l_i_b_i_h_t_cinetune_1/code.html", "lyrics-karaoke": "l_i_b_i_h_t_cinetune_2/code.html" };
-  const api = "";
+  let api = "";
+  let vietnamConnection;
   const frame = document.querySelector("#screen");
   const audio = new Audio();
   const state = { route: "", tracks: [], results: [], query: "", current: null, playing: false, loading: true, error: "", playbackError: "", chartMode: "chart", topSections: [], topLoading: false, topError: "", playlistId: "", playlistTitle: "", playlistTracks: [], playlistLoading: false, queue: [], lyricId: null, lyricLines: [], lyricLoading: false, lyricError: "", favorites: new Set(JSON.parse(localStorage.getItem("cinetune-favorites") || "[]")), history: JSON.parse(localStorage.getItem("cinetune-history") || "[]") };
@@ -21,6 +22,25 @@
     const response = await fetch(`${api}${path}`);
     if (!response.ok) throw new Error(`Zing MP3 error ${response.status}`);
     return await response.json();
+  }
+  function connectVietnam() {
+    if (["localhost", "127.0.0.1"].includes(location.hostname)) return Promise.resolve();
+    if (vietnamConnection) return vietnamConnection;
+    vietnamConnection = (async () => {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 3500);
+      try {
+        const configResponse = await fetch(`https://raw.githubusercontent.com/vin371/MO-Cintune/main/config/android.json?t=${Date.now()}`, { cache: "no-store", signal: controller.signal });
+        if (!configResponse.ok) return;
+        const config = await configResponse.json();
+        const url = config.vietnamApiUrl;
+        if (!/^https:\/\/[a-z0-9.-]+$/i.test(url || "")) return;
+        const health = await fetch(`${url}/health`, { cache: "no-store", signal: controller.signal });
+        if (health.ok) api = url;
+      } catch (error) { /* Máy chủ tại Việt Nam có thể đang tắt; dùng máy chủ trực tuyến. */ }
+      finally { clearTimeout(timeout); }
+    })();
+    return vietnamConnection;
   }
   async function loadTrending() {
     state.loading = true; repaint();
@@ -83,6 +103,7 @@
     state.current = track; miniDismissed = false; state.lyricId = null; state.history = [track, ...state.history.filter((item) => trackId(item) !== id)].slice(0, 20); save();
     state.playbackError = "";
     try {
+      await connectVietnam();
       const source = await get(`/api/song?id=${encodeURIComponent(id)}`);
       if (source.err !== 0 || !source.data?.["128"]) throw new Error(source.msg || "Bài hát không có nguồn phát.");
       audio.src = `${api}/api/song/stream?id=${encodeURIComponent(id)}`;
@@ -151,5 +172,5 @@
   audio.addEventListener("play", () => { state.playing = true; repaint(); }); audio.addEventListener("pause", () => { state.playing = false; repaint(); }); audio.addEventListener("ended", () => advance(1));
   audio.addEventListener("timeupdate", () => { syncProgress(); if (!state.route.startsWith("lyrics")) return; const doc = frame.contentDocument; const index = state.lyricLines.findLastIndex((line) => line.time <= audio.currentTime * 1000); const active = doc?.querySelector(".lyrics .active"); const next = doc?.querySelector(`[data-lyric-index="${index}"]`); if (next && next !== active) { active?.classList.remove("active"); next.classList.add("active"); if (state.route === "lyrics-karaoke") next.scrollIntoView({ block: "center", behavior: "smooth" }); } });
   audio.addEventListener("loadedmetadata", syncProgress);
-  window.addEventListener("hashchange", load); if (!location.hash) location.hash = "home"; else load(); frame.src = "about:blank"; loadTrending();
+  window.addEventListener("hashchange", load); if (!location.hash) location.hash = "home"; else load(); frame.src = "about:blank"; connectVietnam(); loadTrending();
 })();
