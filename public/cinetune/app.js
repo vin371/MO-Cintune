@@ -84,7 +84,7 @@
     finally { if (state.lyricId === id) { state.lyricLoading = false; repaint(); } }
   }
   async function toggle() {
-    if (!state.current && state.tracks[0]) return play(trackId(state.tracks[0]));
+    if ((!state.current && state.tracks[0]) || (state.current && !audio.src)) return play(trackId(state.current || state.tracks[0]));
     if (audio.paused) { await audio.play(); state.playing = true; } else { audio.pause(); state.playing = false; }
     repaint();
   }
