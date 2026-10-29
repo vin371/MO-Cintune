@@ -45,3 +45,4 @@ jobs:
           echo "Mã nguồn mới nhất đã được đẩy và tự động triển khai lên máy chủ web." >> $GITHUB_STEP_SUMMARY
           echo "- **Android App:** Mở ứng dụng CineTune trên điện thoại để trải nghiệm ngay lập tức mà **KHÔNG CẦN CÀI LẠI APK**." >> $GITHUB_STEP_SUMMARY
           echo "- **Trang web:** https://cinetune-api.onrender.com/cinetune/#home" >> $GITHUB_STEP_SUMMARY
+
