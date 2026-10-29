@@ -146,7 +146,12 @@
     playbackRate: Number(stored("cinetune-speed", 1)),
     eqPreset: stored("cinetune-eq", "flat"),
     showEqPanel: false,
-    searchHistory: stored("cinetune-search-history", [])
+    searchHistory: stored("cinetune-search-history", []),
+    songStats: {},
+    userRatings: stored("cinetune-ratings", {}),
+    voiceListening: false,
+    voiceTranscript: "",
+    voiceStatus: "Đang lắng nghe tiếng Việt..."
   };
 
   function showToast(message, durationMs = 2200) {
@@ -316,6 +321,181 @@
     localStorage.removeItem("cinetune-search-history");
     showToast("Đã xóa lịch sử tìm kiếm");
     repaint();
+  }
+
+  // Zing MP3 Listen Count & Star Rating Logic
+  const formatViews = (num) => {
+    const val = Number(num) || 0;
+    if (val >= 1000000) return `${(val / 1000000).toFixed(1)}M`;
+    if (val >= 1000) return `${(val / 1000).toFixed(1)}K`;
+    return String(val);
+  };
+
+  async function loadSongStats(id) {
+    if (!id || state.songStats[id]) return state.songStats[id];
+    try {
+      const payload = await get(`/api/info-song?id=${encodeURIComponent(id)}`);
+      const data = payload?.data || {};
+      const listen = Number(data.listen) || 0;
+      const like = Number(data.like) || 0;
+      const score = Number(data.score) || 0;
+      const stars = Math.min(
+        5.0,
+        Math.max(
+          4.2,
+          Number(
+            (
+              4.5 +
+              Math.min(0.4, (like / Math.max(1, listen || 1000)) * 10) +
+              Math.min(0.1, score / 50000)
+            ).toFixed(1)
+          )
+        )
+      );
+      state.songStats[id] = {
+        listen,
+        like,
+        score,
+        stars,
+        composers: (data.composers || []).map((c) => c.name).join(", "),
+        genres: (data.genres || []).map((g) => g.name).join(", ")
+      };
+      repaint();
+      return state.songStats[id];
+    } catch (_err) {
+      return null;
+    }
+  }
+
+  function rateSong(id, stars) {
+    const track = allTracks().find((item) => trackId(item) === id) || state.current;
+    state.userRatings[id] = stars;
+    localStorage.setItem("cinetune-ratings", JSON.stringify(state.userRatings));
+    showToast(`Đã chấm ${stars} sao ⭐ cho "${track?.title || "bài hát"}"!`);
+    repaint();
+  }
+
+  // Voice Search & Recognition (Mic nói nghe yêu cầu bài hát)
+  let speechRecognizer = null;
+  function startVoiceSearch() {
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+
+    if (!SpeechRecognition) {
+      showToast("Thiết bị không hỗ trợ nhận diện giọng nói (Web Speech API).");
+      return;
+    }
+
+    if (state.voiceListening) {
+      stopVoiceSearch();
+      return;
+    }
+
+    try {
+      speechRecognizer = new SpeechRecognition();
+      speechRecognizer.lang = "vi-VN";
+      speechRecognizer.interimResults = true;
+      speechRecognizer.maxAlternatives = 1;
+
+      speechRecognizer.onstart = () => {
+        state.voiceListening = true;
+        state.voiceTranscript = "";
+        state.voiceStatus = "Đang lắng nghe... Hãy nói tên bài hát";
+        repaint();
+      };
+
+      speechRecognizer.onresult = (event) => {
+        const transcript = Array.from(event.results)
+          .map((result) => result[0].transcript)
+          .join("");
+        state.voiceTranscript = transcript;
+        state.voiceStatus = transcript || "Đang nhận diện giọng nói...";
+        syncVoiceModal();
+
+        const isFinal = event.results[event.results.length - 1].isFinal;
+        if (isFinal && transcript.trim()) {
+          setTimeout(() => handleVoiceCommand(transcript.trim()), 450);
+        }
+      };
+
+      speechRecognizer.onerror = (event) => {
+        state.voiceListening = false;
+        if (event.error === "not-allowed") {
+          showToast("Vui lòng cấp quyền Micro để dùng tìm kiếm giọng nói.");
+        } else if (event.error !== "no-speech") {
+          showToast("Chưa nhận diện được. Chạm vào mic để nói lại.");
+        }
+        repaint();
+      };
+
+      speechRecognizer.onend = () => {
+        state.voiceListening = false;
+        repaint();
+      };
+
+      speechRecognizer.start();
+    } catch (_err) {
+      state.voiceListening = false;
+      showToast("Không thể khởi động Micro. Vui lòng thử lại.");
+      repaint();
+    }
+  }
+
+  function stopVoiceSearch() {
+    state.voiceListening = false;
+    try {
+      speechRecognizer?.stop();
+    } catch (_err) {
+      // Speech recognition already stopped
+    }
+    repaint();
+  }
+
+  async function handleVoiceCommand(rawText) {
+    stopVoiceSearch();
+    if (!rawText) return;
+
+    const isPlayIntent = /^(hãy\s+)?(mở|phát|nghe|bật|chơi)\s+/i.test(rawText);
+    const cleaned = rawText
+      .replace(/^(hãy\s+)?(mở|phát|nghe|bật|chơi|tìm\s+kiếm|tìm)\s+(bài\s+hát|bài|nhạc)?\s*/i, "")
+      .replace(/^(bài\s+hát|bài|nhạc)\s+/i, "")
+      .trim();
+
+    const targetQuery = cleaned || rawText;
+
+    if (isPlayIntent) {
+      showToast(`🎙️ Đang tìm & phát: "${targetQuery}"`);
+      try {
+        const payload = await get(`/api/search?q=${encodeURIComponent(targetQuery)}`);
+        const songs = payload?.data?.songs || [];
+        if (songs.length) {
+          const firstSong = songs[0];
+          setQueue(songs, trackId(firstSong));
+          go("player");
+          await play(trackId(firstSong));
+          showToast(`▶ Đang phát: "${firstSong.title}"`);
+          return;
+        }
+      } catch (_err) {
+        // Fallback to normal search
+      }
+    }
+
+    showToast(`🎙️ Đã nhận diện: "${targetQuery}"`);
+    state.query = targetQuery;
+    addSearchHistory(targetQuery);
+    go("search");
+    search(targetQuery);
+  }
+
+  function syncVoiceModal() {
+    const doc = frame.contentDocument;
+    const textEl = doc?.querySelector("#voice-transcript");
+    if (textEl) textEl.textContent = state.voiceTranscript || "Đang lắng nghe...";
+  }
+
+  function voiceModal() {
+    if (!state.voiceListening) return "";
+    return `<div class="modal-backdrop" data-close-voice><section class="voice-modal" role="dialog" aria-modal="true" aria-label="Tìm kiếm bằng giọng nói"><div class="voice-pulse-ring"><button class="voice-mic-active" data-action="stop-voice" aria-label="Dừng nghe">🎙️</button><div class="pulse-wave"></div><div class="pulse-wave wave-2"></div></div><h2>Đang lắng nghe tiếng Việt…</h2><p class="voice-status" id="voice-transcript">${esc(state.voiceTranscript || state.voiceStatus)}</p><div class="voice-hints"><span>Gợi ý: “Phát bài Cắt Đôi Nỗi Sầu”</span><span>“Mở bài Nơi này có anh”</span><span>“Tìm nhạc Sơn Tùng M-TP”</span></div><button class="voice-cancel" data-action="stop-voice">✕ Hủy bỏ</button></section></div>`;
   }
 
   const esc = (value = "") =>
@@ -784,6 +964,7 @@
     state.history = [track, ...state.history.filter((item) => trackId(item) !== id)].slice(0, 20);
     save();
     state.playbackError = "";
+    loadSongStats(id);
 
     if (nativePlayback) {
       const selected = state.queue.length ? state.queue : [track];
@@ -990,7 +1171,7 @@
 
   function page(title, body, options = {}) {
     const { backButton = false, tabs = true } = options;
-    return `<style>*{box-sizing:border-box}body{margin:0;background:#0b1020;color:#f7f8fd;font-family:Inter,system-ui,sans-serif}.app{min-height:100dvh;padding:18px 16px 150px}button{font:inherit;cursor:pointer}.top{display:flex;align-items:center;gap:10px;margin-bottom:18px}.top h1{margin:0;font-size:21px;letter-spacing:-.03em}.eyebrow{font-size:11px;font-weight:800;letter-spacing:.09em;text-transform:uppercase;color:#4169e1}.back,.round{border:0;background:#e6eeff;color:#214fc7}.back{width:40px;height:40px;border-radius:50%;font-size:24px}.hero{padding:20px;border-radius:22px;color:white;background:linear-gradient(135deg,#214fc7,#7161e3);box-shadow:0 16px 32px #214fc73b}.hero h2{font-size:26px;line-height:1.1;margin:6px 0}.hero p{font-size:14px;opacity:.84;margin:0}.head{display:flex;justify-content:space-between;align-items:end;margin:24px 0 10px}.head h2{margin:0;font-size:17px}.head span,.note{color:#747685;font-size:12px}.track{display:grid;grid-template-columns:54px 1fr 39px 32px;gap:10px;align-items:center;padding:9px 0;border-bottom:1px solid #e6eeff}.track img{width:54px;height:54px;object-fit:cover;border-radius:13px;background:#e6eeff}.copy{background:transparent;border:0;padding:0;text-align:left;min-width:0;color:#121c2a}.copy strong,.copy span{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.copy strong{font-size:14px}.copy span{font-size:12px;color:#747685;margin-top:4px}.round{width:38px;height:38px;border-radius:50%;font-weight:800}.heart{border:0;background:transparent;color:#5846c8;font-size:21px}.empty{padding:30px 18px;border-radius:18px;background:#eef3ff;text-align:center;color:#747685}.search{width:100%;padding:15px 16px;border:0;border-radius:16px;background:#fff;box-shadow:0 4px 18px #121c2a12;font-size:15px;outline-color:#4169e1}.art{width:100%;aspect-ratio:1;object-fit:cover;border-radius:26px;box-shadow:0 20px 36px #121c2a33}.center{text-align:center;margin:22px 0}.center h2{margin:0 0 8px;font-size:25px}.center p{margin:0;color:#747685}.actions{display:flex;gap:10px}.primary,.secondary{flex:1;border:0;padding:14px;border-radius:14px;font-weight:800}.primary{background:#214fc7;color:#fff}.secondary{background:#e6eeff;color:#214fc7}.card{padding:18px;background:#fff;border-radius:18px;box-shadow:0 4px 18px #121c2a0d;margin:12px 0}.card strong{display:block;color:#214fc7;font-size:23px}.time{display:flex;justify-content:space-between;color:#747685;font-size:12px}.controls{display:flex;justify-content:center;align-items:center;gap:22px;margin:28px 0}.controls button{border:0;background:transparent;color:#214fc7;font-size:25px}.controls .main{width:68px;height:68px;border-radius:50%;background:#214fc7;color:#fff}nav{position:fixed;bottom:0;left:0;right:0;height:72px;padding-bottom:env(safe-area-inset-bottom);display:flex;background:#fffffff5;box-shadow:0 -3px 18px #121c2a12}nav button{width:20%;border:0;background:transparent;color:#747685;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;font-size:11px}nav b{font-size:22px;line-height:20px}nav .active{color:#214fc7;font-weight:800}.mini{position:fixed;bottom:82px;left:16px;right:16px;z-index:2;display:flex;align-items:center;gap:10px;padding:8px;border:1px solid #e6eeff;border-radius:18px;background:#fff;box-shadow:0 10px 30px #121c2a24;color:#121c2a;text-align:left}.mini-open{display:flex;align-items:center;gap:10px;flex:1;min-width:0;padding:0;border:0;background:transparent;text-align:left}.mini img{width:44px;height:44px;object-fit:cover;border-radius:12px}.mini span{min-width:0;flex:1}.mini strong,.mini small{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.mini strong{font-size:13px}.mini small{color:#747685;font-size:11px;margin-top:3px}.mini-toggle,.mini-close{width:34px;height:34px;border:0;border-radius:50%;background:#e6eeff;color:#214fc7;font-size:18px}.mini-close{background:transparent;color:#747685;font-size:25px}.art-frame{max-width:500px;margin:0 auto;aspect-ratio:1;border-radius:24px;overflow:hidden;background:#dfe9fc;box-shadow:0 20px 36px #121c2a25}.art-frame .art{display:block;width:100%;height:100%;border-radius:0;box-shadow:none}.seek{appearance:none;width:100%;height:7px;margin:20px 0 8px;border-radius:99px;background:linear-gradient(to right,#214fc7 var(--played),#d9e3f6 var(--played));cursor:pointer}.seek::-webkit-slider-thumb{appearance:none;width:16px;height:16px;border:3px solid #fff;border-radius:50%;background:#214fc7;box-shadow:0 1px 6px #121c2a55}.seek::-moz-range-thumb{width:12px;height:12px;border:3px solid #fff;border-radius:50%;background:#214fc7}.lyrics{font-size:20px;line-height:1.8;margin:26px 4px}.lyrics p{opacity:.38}.lyrics .active{opacity:1;color:#214fc7;font-weight:800}.karaoke{padding:14px;border-radius:16px;background:#eef3ff;color:#4169e1;font-size:13px}nav{height:calc(72px + env(safe-area-inset-bottom));padding-bottom:env(safe-area-inset-bottom)}.mini{bottom:calc(82px + env(safe-area-inset-bottom))}.app{padding-bottom:calc(150px + env(safe-area-inset-bottom))}.chart-tabs{display:flex;gap:8px;margin:8px 0 14px;padding:5px;border-radius:16px;background:#e6eeff}.chart-tabs button{flex:1;border:0;border-radius:12px;padding:11px 6px;background:transparent;color:#52647c;font-weight:800}.chart-tabs button.selected{background:#fff;color:#214fc7;box-shadow:0 3px 12px #121c2a12}.ranked{display:flex;align-items:center;gap:8px}.ranked .track{flex:1;min-width:0}.rank{width:28px;flex:none;text-align:center;color:#214fc7;font-size:17px}.playlist-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}.playlist-card{display:flex;flex-direction:column;gap:9px;padding:8px;border:0;border-radius:16px;background:#fff;color:#121c2a;text-align:left;box-shadow:0 3px 14px #121c2a0c}.playlist-card img{width:100%;aspect-ratio:1;object-fit:cover;border-radius:11px}.playlist-card span{font-size:13px;font-weight:700;line-height:1.35}.playlist-back{border:0;background:transparent;color:#214fc7;padding:8px 0;font-weight:700}.player-tools{display:flex;gap:10px;margin:0 0 12px}.player-tools button{flex:1;display:flex;align-items:center;justify-content:center;gap:8px;min-width:0;padding:12px 8px;border:0;border-radius:14px;background:#e6eeff;color:#214fc7}.player-tools button.selected{background:#dce7ff}.player-tools b{font-size:22px;line-height:1}.player-tools span{font-size:12px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.sleep-options{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:6px;margin:0 0 14px}.sleep-options button{border:0;border-radius:12px;padding:11px 2px;background:#edf1f9;color:#40506b;font-size:12px;font-weight:700}.sleep-options button.selected{background:#214fc7;color:white}</style><link rel="stylesheet" href="/cinetune/theme.css?v=7"><main class="app ${esc(state.route)}"><header class="top">${backButton ? '<button class="back" data-back>‹</button>' : ""}<div><div class="eyebrow">CineTune · Live</div><h1>${esc(title)}</h1></div></header>${body}</main>${mini()}${tabs ? nav() : ""}`;
+    return `<style>*{box-sizing:border-box}body{margin:0;background:#0b1020;color:#f7f8fd;font-family:Inter,system-ui,sans-serif}.app{min-height:100dvh;padding:18px 16px 150px}button{font:inherit;cursor:pointer}.top{display:flex;align-items:center;gap:10px;margin-bottom:18px}.top h1{margin:0;font-size:21px;letter-spacing:-.03em}.eyebrow{font-size:11px;font-weight:800;letter-spacing:.09em;text-transform:uppercase;color:#4169e1}.back,.round{border:0;background:#e6eeff;color:#214fc7}.back{width:40px;height:40px;border-radius:50%;font-size:24px}.hero{padding:20px;border-radius:22px;color:white;background:linear-gradient(135deg,#214fc7,#7161e3);box-shadow:0 16px 32px #214fc73b}.hero h2{font-size:26px;line-height:1.1;margin:6px 0}.hero p{font-size:14px;opacity:.84;margin:0}.head{display:flex;justify-content:space-between;align-items:end;margin:24px 0 10px}.head h2{margin:0;font-size:17px}.head span,.note{color:#747685;font-size:12px}.track{display:grid;grid-template-columns:54px 1fr 39px 32px;gap:10px;align-items:center;padding:9px 0;border-bottom:1px solid #e6eeff}.track img{width:54px;height:54px;object-fit:cover;border-radius:13px;background:#e6eeff}.copy{background:transparent;border:0;padding:0;text-align:left;min-width:0;color:#121c2a}.copy strong,.copy span{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.copy strong{font-size:14px}.copy span{font-size:12px;color:#747685;margin-top:4px}.round{width:38px;height:38px;border-radius:50%;font-weight:800}.heart{border:0;background:transparent;color:#5846c8;font-size:21px}.empty{padding:30px 18px;border-radius:18px;background:#eef3ff;text-align:center;color:#747685}.search{width:100%;padding:15px 16px;border:0;border-radius:16px;background:#fff;box-shadow:0 4px 18px #121c2a12;font-size:15px;outline-color:#4169e1}.art{width:100%;aspect-ratio:1;object-fit:cover;border-radius:26px;box-shadow:0 20px 36px #121c2a33}.center{text-align:center;margin:22px 0}.center h2{margin:0 0 8px;font-size:25px}.center p{margin:0;color:#747685}.actions{display:flex;gap:10px}.primary,.secondary{flex:1;border:0;padding:14px;border-radius:14px;font-weight:800}.primary{background:#214fc7;color:#fff}.secondary{background:#e6eeff;color:#214fc7}.card{padding:18px;background:#fff;border-radius:18px;box-shadow:0 4px 18px #121c2a0d;margin:12px 0}.card strong{display:block;color:#214fc7;font-size:23px}.time{display:flex;justify-content:space-between;color:#747685;font-size:12px}.controls{display:flex;justify-content:center;align-items:center;gap:22px;margin:28px 0}.controls button{border:0;background:transparent;color:#214fc7;font-size:25px}.controls .main{width:68px;height:68px;border-radius:50%;background:#214fc7;color:#fff}nav{position:fixed;bottom:0;left:0;right:0;height:72px;padding-bottom:env(safe-area-inset-bottom);display:flex;background:#fffffff5;box-shadow:0 -3px 18px #121c2a12}nav button{width:20%;border:0;background:transparent;color:#747685;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;font-size:11px}nav b{font-size:22px;line-height:20px}nav .active{color:#214fc7;font-weight:800}.mini{position:fixed;bottom:82px;left:16px;right:16px;z-index:2;display:flex;align-items:center;gap:10px;padding:8px;border:1px solid #e6eeff;border-radius:18px;background:#fff;box-shadow:0 10px 30px #121c2a24;color:#121c2a;text-align:left}.mini-open{display:flex;align-items:center;gap:10px;flex:1;min-width:0;padding:0;border:0;background:transparent;text-align:left}.mini img{width:44px;height:44px;object-fit:cover;border-radius:12px}.mini span{min-width:0;flex:1}.mini strong,.mini small{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.mini strong{font-size:13px}.mini small{color:#747685;font-size:11px;margin-top:3px}.mini-toggle,.mini-close{width:34px;height:34px;border:0;border-radius:50%;background:#e6eeff;color:#214fc7;font-size:18px}.mini-close{background:transparent;color:#747685;font-size:25px}.art-frame{max-width:500px;margin:0 auto;aspect-ratio:1;border-radius:24px;overflow:hidden;background:#dfe9fc;box-shadow:0 20px 36px #121c2a25}.art-frame .art{display:block;width:100%;height:100%;border-radius:0;box-shadow:none}.seek{appearance:none;width:100%;height:7px;margin:20px 0 8px;border-radius:99px;background:linear-gradient(to right,#214fc7 var(--played),#d9e3f6 var(--played));cursor:pointer}.seek::-webkit-slider-thumb{appearance:none;width:16px;height:16px;border:3px solid #fff;border-radius:50%;background:#214fc7;box-shadow:0 1px 6px #121c2a55}.seek::-moz-range-thumb{width:12px;height:12px;border:3px solid #fff;border-radius:50%;background:#214fc7}.lyrics{font-size:20px;line-height:1.8;margin:26px 4px}.lyrics p{opacity:.38}.lyrics .active{opacity:1;color:#214fc7;font-weight:800}.karaoke{padding:14px;border-radius:16px;background:#eef3ff;color:#4169e1;font-size:13px}nav{height:calc(72px + env(safe-area-inset-bottom));padding-bottom:env(safe-area-inset-bottom)}.mini{bottom:calc(82px + env(safe-area-inset-bottom))}.app{padding-bottom:calc(150px + env(safe-area-inset-bottom))}.chart-tabs{display:flex;gap:8px;margin:8px 0 14px;padding:5px;border-radius:16px;background:#e6eeff}.chart-tabs button{flex:1;border:0;border-radius:12px;padding:11px 6px;background:transparent;color:#52647c;font-weight:800}.chart-tabs button.selected{background:#fff;color:#214fc7;box-shadow:0 3px 12px #121c2a12}.ranked{display:flex;align-items:center;gap:8px}.ranked .track{flex:1;min-width:0}.rank{width:28px;flex:none;text-align:center;color:#214fc7;font-size:17px}.playlist-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}.playlist-card{display:flex;flex-direction:column;gap:9px;padding:8px;border:0;border-radius:16px;background:#fff;color:#121c2a;text-align:left;box-shadow:0 3px 14px #121c2a0c}.playlist-card img{width:100%;aspect-ratio:1;object-fit:cover;border-radius:11px}.playlist-card span{font-size:13px;font-weight:700;line-height:1.35}.playlist-back{border:0;background:transparent;color:#214fc7;padding:8px 0;font-weight:700}.player-tools{display:flex;gap:10px;margin:0 0 12px}.player-tools button{flex:1;display:flex;align-items:center;justify-content:center;gap:8px;min-width:0;padding:12px 8px;border:0;border-radius:14px;background:#e6eeff;color:#214fc7}.player-tools button.selected{background:#dce7ff}.player-tools b{font-size:22px;line-height:1}.player-tools span{font-size:12px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.sleep-options{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:6px;margin:0 0 14px}.sleep-options button{border:0;border-radius:12px;padding:11px 2px;background:#edf1f9;color:#40506b;font-size:12px;font-weight:700}.sleep-options button.selected{background:#214fc7;color:white}</style><link rel="stylesheet" href="/cinetune/theme.css?v=8"><main class="app ${esc(state.route)}"><header class="top">${backButton ? '<button class="back" data-back>‹</button>' : ""}<div><div class="eyebrow">CineTune · Live</div><h1>${esc(title)}</h1></div><button class="mic-top-btn" data-action="start-voice" aria-label="Nói để tìm bài hát" title="Tìm bài hát bằng giọng nói">🎙️</button></header>${body}</main>${mini()}${tabs ? nav() : ""}`;
   }
 
   function home() {
@@ -1076,7 +1257,7 @@
       : "";
     return page(
       "Tìm kiếm",
-      `<input class="search" id="query" value="${esc(state.query)}" placeholder="Tìm bài hát, nghệ sĩ hoặc thể loại" autofocus>${!hasQuery ? hotTagsHtml + historyHtml : ""}<p class="note" id="search-note">${hasQuery ? `Kết quả cho “${esc(state.query)}”` : "Gợi ý nhạc thịnh hành"}</p><section id="search-results">${searchMarkup()}</section>`
+      `<div class="search-bar-wrap"><input class="search" id="query" value="${esc(state.query)}" placeholder="Tìm bài hát, nghệ sĩ hoặc thể loại" autofocus><button class="mic-search-btn" data-action="start-voice" aria-label="Nói để tìm kiếm" title="Tìm bằng giọng nói">🎙️</button></div>${!hasQuery ? hotTagsHtml + historyHtml : ""}<p class="note" id="search-note">${hasQuery ? `Kết quả cho “${esc(state.query)}”` : "Gợi ý nhạc thịnh hành"}</p><section id="search-results">${searchMarkup()}</section>`
     );
   }
 
@@ -1087,9 +1268,20 @@
         backButton: true
       });
     const id = trackId(track);
+    loadSongStats(id);
+    const stats = state.songStats[id];
+    const userRating = state.userRatings[id] || 0;
+    const listenCount = stats?.listen || (Number(track.duration) || 200) * 850;
+    const likeCount = stats?.like || Math.round(listenCount * 0.04);
+    const starVal = stats?.stars || "4.9";
+
+    const statsCard = `<div class="song-stats-card"><span class="stat-pill"><b>🎧 / 👁</b> ${formatViews(listenCount)} lượt nghe</span><span class="stat-pill"><b>❤️</b> ${formatViews(likeCount)} thích</span><span class="stat-pill"><b>⭐</b> ${starVal}/5.0 (Zing MP3)</span></div>`;
+
+    const userRatingWidget = `<div class="user-rating-wrap"><span class="rating-label">Xếp hạng của bạn:</span><div class="rating-stars">${[1, 2, 3, 4, 5].map((s) => `<button class="star-btn ${userRating >= s ? "active" : ""}" data-rate-stars="${s}:${esc(id)}" aria-label="Chấm ${s} sao">★</button>`).join("")}</div><span class="user-rate-hint">${userRating ? `Bạn đã đánh giá ${userRating} sao!` : "Chạm sao để đánh giá bài hát"}</span></div>`;
+
     return page(
       "Chi tiết bài hát",
-      `<div class="art-frame"><img class="art" src="${esc(art(track, true))}" alt="Bìa ${esc(track.title)}"></div><section class="center"><h2>${esc(track.title)}</h2><p class="artist-links">${artistLinks(track)}</p><p class="note">${duration(track.duration)}</p></section><div class="actions"><button class="primary" data-play="${esc(id)}">▶ Phát bài hát</button><button class="secondary" data-favorite="${esc(id)}">${state.favorites.has(id) ? "♥ Đã thích" : "♡ Yêu thích"}</button><button class="secondary" data-share="${esc(id)}" aria-label="Chia sẻ bài hát">➦</button></div>`,
+      `<div class="art-frame"><img class="art" src="${esc(art(track, true))}" alt="Bìa ${esc(track.title)}"></div><section class="center"><h2>${esc(track.title)}</h2><p class="artist-links">${artistLinks(track)}</p><p class="note">${duration(track.duration)}</p>${statsCard}</section>${userRatingWidget}<div class="actions"><button class="primary" data-play="${esc(id)}">▶ Phát bài hát</button><button class="secondary" data-favorite="${esc(id)}">${state.favorites.has(id) ? "♥ Đã thích" : "♡ Yêu thích"}</button><button class="secondary" data-share="${esc(id)}" aria-label="Chia sẻ bài hát">➦</button></div>`,
       { backButton: true }
     );
   }
@@ -1102,6 +1294,12 @@
         tabs: false
       });
     const id = trackId(track);
+    loadSongStats(id);
+    const stats = state.songStats[id];
+    const userRating = state.userRatings[id] || 0;
+    const listenCount = stats?.listen || (Number(track.duration) || 200) * 850;
+    const starVal = stats?.stars || "4.9";
+    const likeCount = stats?.like || Math.round(listenCount * 0.04);
     const total = playbackDuration();
     const pct = total ? Math.min(100, (playbackPosition() / total) * 100) : 0;
     const volPct = Math.round((state.muted ? 0 : state.volume) * 100);
@@ -1146,11 +1344,11 @@
 
     const volumeBar = `<div class="player-volume-wrap"><button data-action="toggle-mute" aria-label="Bật/Tắt âm lượng">${state.muted || volPct === 0 ? "🔇" : volPct < 50 ? "🔉" : "🔊"}</button><input class="volume-seek" id="volume-slider" type="range" min="0" max="100" value="${volPct}" style="--volume-pct:${volPct}%" aria-label="Âm lượng"><span class="volume-pct-label" id="volume-label">${volPct}%</span></div>`;
 
-    const secondaryTools = `<div class="secondary-tools"><button data-action="eq-panel" class="${state.showEqPanel ? "active-tool" : ""}" aria-label="Bộ chỉnh âm"><b>🎚</b><span>EQ · ${esc(EQ_PRESETS[state.eqPreset]?.name || "Chuẩn")}</span></button><button data-action="cycle-speed" aria-label="Tốc độ phát"><b>⚡</b><span>${state.playbackRate}x</span></button><button data-action="share-current" aria-label="Chia sẻ bài hát"><b>➦</b><span>Chia sẻ</span></button></div>${eqOptions}`;
+    const secondaryTools = `<div class="secondary-tools"><button data-action="eq-panel" class="${state.showEqPanel ? "active-tool" : ""}" aria-label="Bộ chỉnh âm"><b>🎚</b><span>EQ · ${esc(EQ_PRESETS[state.eqPreset]?.name || "Chuẩn")}</span></button><button data-action="cycle-speed" aria-label="Tốc độ phát"><b>⚡</b><span>${state.playbackRate}x</span></button><button data-action="start-voice" aria-label="Nói để phát nhạc"><b>🎙️</b><span>Nói</span></button><button data-action="share-current" aria-label="Chia sẻ bài hát"><b>➦</b><span>Chia sẻ</span></button></div>${eqOptions}`;
 
     return page(
       "Trình phát",
-      `<div class="art-frame"><img class="art" src="${esc(art(track, true))}" alt="Bìa ${esc(track.title)}"></div><section class="center"><h2>${esc(track.title)}</h2><p class="artist-links">${artistLinks(track)}</p></section>${state.playbackError ? `<div class="card" role="alert"><p>${esc(state.playbackError)}</p><a href="${esc(officialUrl(track))}" target="_blank" rel="noopener noreferrer">Nghe bài này trên Zing MP3 ↗</a></div>` : ""}<input class="seek" id="seek" type="range" min="0" max="1000" value="${Math.round(pct * 10)}" aria-label="Tua bài hát" style="--played:${pct}%"><div class="time"><span id="elapsed">${duration(Math.floor(playbackPosition()))}</span><span id="total">${duration(Math.floor(total || 0))}</span></div><div class="controls"><button data-action="previous" aria-label="Bài trước">‹‹</button><button class="main" data-action="toggle" aria-label="${state.playing ? "Tạm dừng" : "Phát"}">${state.playing ? "Ⅱ" : "▶"}</button><button data-action="next" aria-label="Bài tiếp">››</button></div>${volumeBar}<div class="player-tools"><button data-action="shuffle" class="${state.shuffle ? "selected" : ""}" aria-label="Phát ngẫu nhiên"><b>⤨</b><span>Ngẫu nhiên</span></button><button data-action="repeat" class="${state.repeatMode !== "off" ? "selected" : ""}" aria-label="${repeat[1]}"><b>${repeat[0]}</b><span>${repeat[1]}</span></button><button data-action="sleep-panel" class="${state.sleepUntil ? "selected" : ""}" aria-label="Hẹn giờ dừng nhạc"><b>◷</b><span id="sleep-status">Hẹn giờ · ${sleepLabel()}</span></button></div>${sleepOptions}${secondaryTools}<div class="actions"><button class="secondary" data-favorite="${esc(id)}">${state.favorites.has(id) ? "♥ Đã thích" : "♡ Yêu thích"}</button></div>${upcoming.length ? `<div class="head"><h2>Phát tiếp</h2><button class="text-link" data-nav="queue">Xem hàng chờ · ${list.length} bài</button></div>${upcoming.map(item).join("")}` : ""}`,
+      `<div class="art-frame"><img class="art" src="${esc(art(track, true))}" alt="Bìa ${esc(track.title)}"></div><section class="center"><h2>${esc(track.title)}</h2><p class="artist-links">${artistLinks(track)}</p><button class="player-stats-bar" data-nav="song" data-track="${esc(id)}"><span class="badge-listen">🎧 ${formatViews(listenCount)} lượt nghe</span><span class="badge-star">⭐ ${starVal} (${formatViews(likeCount)} đánh giá)</span>${userRating ? `<span class="badge-user-rate">· Bạn: ${userRating}★</span>` : ""}</button></section>${state.playbackError ? `<div class="card" role="alert"><p>${esc(state.playbackError)}</p><a href="${esc(officialUrl(track))}" target="_blank" rel="noopener noreferrer">Nghe bài này trên Zing MP3 ↗</a></div>` : ""}<input class="seek" id="seek" type="range" min="0" max="1000" value="${Math.round(pct * 10)}" aria-label="Tua bài hát" style="--played:${pct}%"><div class="time"><span id="elapsed">${duration(Math.floor(playbackPosition()))}</span><span id="total">${duration(Math.floor(total || 0))}</span></div><div class="controls"><button data-action="previous" aria-label="Bài trước">‹‹</button><button class="main" data-action="toggle" aria-label="${state.playing ? "Tạm dừng" : "Phát"}">${state.playing ? "Ⅱ" : "▶"}</button><button data-action="next" aria-label="Bài tiếp">››</button></div>${volumeBar}<div class="player-tools"><button data-action="shuffle" class="${state.shuffle ? "selected" : ""}" aria-label="Phát ngẫu nhiên"><b>⤨</b><span>Ngẫu nhiên</span></button><button data-action="repeat" class="${state.repeatMode !== "off" ? "selected" : ""}" aria-label="${repeat[1]}"><b>${repeat[0]}</b><span>${repeat[1]}</span></button><button data-action="sleep-panel" class="${state.sleepUntil ? "selected" : ""}" aria-label="Hẹn giờ dừng nhạc"><b>◷</b><span id="sleep-status">Hẹn giờ · ${sleepLabel()}</span></button></div>${sleepOptions}${secondaryTools}<div class="actions"><button class="secondary" data-favorite="${esc(id)}">${state.favorites.has(id) ? "♥ Đã thích" : "♡ Yêu thích"}</button></div>${upcoming.length ? `<div class="head"><h2>Phát tiếp</h2><button class="text-link" data-nav="queue">Xem hàng chờ · ${list.length} bài</button></div>${upcoming.map(item).join("")}` : ""}`,
       { backButton: true, tabs: false }
     );
   }
@@ -1253,13 +1451,13 @@
       doc.head.append(style);
       const theme = doc.createElement("link");
       theme.rel = "stylesheet";
-      theme.href = "/cinetune/theme.css?v=7";
+      theme.href = "/cinetune/theme.css?v=8";
       doc.head.append(theme);
       doc.documentElement.style.background = "#0b1020";
       doc.body.style.background = "#0b1020";
     }
     doc.body.innerHTML =
-      markup.replace(/^<style>[\s\S]*?<\/style><link[^>]*>/, "") + playlistPicker();
+      markup.replace(/^<style>[\s\S]*?<\/style><link[^>]*>/, "") + playlistPicker() + voiceModal();
     doc.querySelectorAll("[data-create-playlist]").forEach((form) =>
       form.addEventListener("submit", (event) => {
         event.preventDefault();
@@ -1374,7 +1572,7 @@
 
   function click(event) {
     const target = event.target.closest(
-      "[data-nav],[data-play],[data-play-all],[data-favorite],[data-action],[data-back],[data-chart-mode],[data-chart-hour],[data-playlist],[data-playlist-back],[data-retry-top],[data-retry-new],[data-sleep],[data-artist],[data-add-track],[data-add-to-list],[data-close-picker],[data-my-list],[data-play-my-list],[data-shuffle-my-list],[data-delete-list],[data-confirm-delete],[data-cancel-delete],[data-remove-list],[data-move-list],[data-move-queue],[data-play-artist],[data-more-artist],[data-clear-history],[data-share],[data-eq-preset],[data-search-tag],[data-clear-search-history]"
+      "[data-nav],[data-play],[data-play-all],[data-favorite],[data-action],[data-back],[data-chart-mode],[data-chart-hour],[data-playlist],[data-playlist-back],[data-retry-top],[data-retry-new],[data-sleep],[data-artist],[data-add-track],[data-add-to-list],[data-close-picker],[data-my-list],[data-play-my-list],[data-shuffle-my-list],[data-delete-list],[data-confirm-delete],[data-cancel-delete],[data-remove-list],[data-move-list],[data-move-queue],[data-play-artist],[data-more-artist],[data-clear-history],[data-share],[data-eq-preset],[data-search-tag],[data-clear-search-history],[data-rate-stars],[data-close-voice]"
     );
     if (!target) return;
     event.preventDefault();
@@ -1543,6 +1741,18 @@
       return play(target.dataset.play);
     }
     if (target.dataset.favorite) return favorite(target.dataset.favorite);
+    if (target.dataset.rateStars) {
+      const [starNum, sId] = target.dataset.rateStars.split(":");
+      return rateSong(sId, Number(starNum));
+    }
+    if (
+      target.dataset.closeVoice !== undefined &&
+      (target === event.target || target.tagName === "BUTTON")
+    ) {
+      return stopVoiceSearch();
+    }
+    if (target.dataset.action === "start-voice") return startVoiceSearch();
+    if (target.dataset.action === "stop-voice") return stopVoiceSearch();
     if (target.dataset.share) {
       const track = allTracks().find((item) => trackId(item) === target.dataset.share);
       return shareTrack(track);

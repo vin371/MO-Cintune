@@ -39,7 +39,15 @@ public class MainActivity extends Activity {
         webView.getSettings().setMediaPlaybackRequiresUserGesture(false);
         webView.addJavascriptInterface(new NativeZingBridge(), "CineTuneNative");
         webView.addJavascriptInterface(new NativePlaybackBridge(this), "CineTunePlayback");
-        webView.setWebChromeClient(new WebChromeClient());
+        webView.setWebChromeClient(new WebChromeClient() {
+            @Override
+            public void onPermissionRequest(final android.webkit.PermissionRequest request) {
+                request.grant(request.getResources());
+            }
+        });
+        if (checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(new String[]{android.Manifest.permission.RECORD_AUDIO}, 101);
+        }
         webView.setWebViewClient(new WebViewClient() {
             @Override public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
                 Uri uri = request.getUrl();

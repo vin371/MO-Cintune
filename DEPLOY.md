@@ -7,6 +7,7 @@ Tài liệu hướng dẫn hệ thống CI/CD GitHub Actions, quy trình cập n
 ## 1. Cơ chế Cập nhật Tự động (Không Cần Cài Lại File APK)
 
 ### Vì sao không cần cài lại APK mỗi khi thay đổi code?
+
 1. **Kiến trúc Hybrid Shell:**
    - Ứng dụng Android `CineTune-Android` là một Native Shell với WebView kết nối trực tiếp đến máy chủ web tại:
      `https://cinetune-api.onrender.com/cinetune/#home`
@@ -26,13 +27,14 @@ Tài liệu hướng dẫn hệ thống CI/CD GitHub Actions, quy trình cập n
 
 Các workflow được thiết lập trong `.github/workflows/`:
 
-| Workflow | File | Mục đích & Thời điểm kích hoạt |
-| :--- | :--- | :--- |
-| **CI & Code Review** | `.github/workflows/ci.yml` | Chạy trên mọi `push` và `pull_request`: Kiểm tra cú pháp, Unit Tests, ESLint, Prettier và chấm điểm Clean Code Score tự động xuất ra GitHub Summary. |
-| **Live Web CD** | `.github/workflows/deploy.yml` | Chạy khi `push` vào nhánh `main`: Kích hoạt Render Deploy Hook để cập nhật web live ngay lập tức. |
-| **Native Android Build** | `.github/workflows/android-build.yml` | Chỉ chạy khi thay đổi file trong `android/**`, tạo Git Tag `v*` hoặc bấm "Run workflow" thủ công. Đính kèm APK vào GitHub Release/Artifacts. |
+| Workflow                 | File                                  | Mục đích & Thời điểm kích hoạt                                                                                                                       |
+| :----------------------- | :------------------------------------ | :--------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **CI & Code Review**     | `.github/workflows/ci.yml`            | Chạy trên mọi `push` và `pull_request`: Kiểm tra cú pháp, Unit Tests, ESLint, Prettier và chấm điểm Clean Code Score tự động xuất ra GitHub Summary. |
+| **Live Web CD**          | `.github/workflows/deploy.yml`        | Chạy khi `push` vào nhánh `main`: Kích hoạt Render Deploy Hook để cập nhật web live ngay lập tức.                                                    |
+| **Native Android Build** | `.github/workflows/android-build.yml` | Chỉ chạy khi thay đổi file trong `android/**`, tạo Git Tag `v*` hoặc bấm "Run workflow" thủ công. Đính kèm APK vào GitHub Release/Artifacts.         |
 
 ### Cấu hình Render Deploy Hook (Tùy chọn để CD nhanh nhất):
+
 1. Đăng nhập [dashboard.render.com](https://dashboard.render.com), chọn service `cinetune-api`.
 2. Vào **Settings** -> cuộn xuống **Deploy Hook** -> bấm **Create Deploy Hook** và copy URL.
 3. Vào GitHub Repository `vin371/MO-Cintune` -> **Settings** -> **Secrets and variables** -> **Actions**.
@@ -65,6 +67,14 @@ CineTune đã được bổ sung hàng loạt tính năng hiện đại:
 7. **Tìm Kiếm Thông Minh & Lịch Sử Gần Đây:**
    - Thẻ gợi ý nhanh các nghệ sĩ hot (Sơn Tùng M-TP, Vũ, HIEUTHUHAI, Đen Vâu...).
    - Lưu lịch sử tìm kiếm gần đây để tìm lại nhanh chỉ bằng 1 chạm.
+8. **Thống Kê Lượt Xem / Lượt Nghe & Xếp Hạng Sao (Zing MP3 Style):**
+   - Hiển thị lượt nghe thực tế (`🎧 / 👁 4.5M lượt xem`), lượt thích (`❤️ 172K`) từ API Zing MP3.
+   - Điểm đánh giá sao tổng hợp `⭐ 4.9/5.0 sao (Zing MP3)`.
+   - Bộ chấm sao tương tác `[★ ★ ★ ★ ★]` cho phép người dùng tự đánh giá 1-5 sao và lưu vào thiết bị.
+9. **Tìm Kiếm & Yêu Cầu Bài Hát Bằng Giọng Nói (Voice Command Mic 🎙️):**
+   - Nút Micro tiện lợi ngay trên thanh tìm kiếm và header ứng dụng.
+   - Tích hợp Web Speech API tiếng Việt (`vi-VN`) với hiệu ứng sóng âm pulsing wave hiện đại.
+   - Nhận diện câu lệnh thông minh: nói _"Mở bài..."_, _"Phát bài..."_, _"Nghe bài..."_ sẽ tự động tìm kiếm và phát ngay bài hát; nói _"Tìm bài..."_ sẽ hiển thị ngay danh sách kết quả.
 
 ---
 
