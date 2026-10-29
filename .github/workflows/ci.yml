@@ -1,0 +1,43 @@
+name: CineTune CI & Code Review
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+jobs:
+  code-quality:
+    name: Clean Code, Review & Tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Syntax and Compile Validation
+        run: |
+          node -c server.js
+          node -c scripts/code-review.js
+
+      - name: Run Automated Unit & Smoke Tests
+        run: npm test
+
+      - name: Lint Code (ESLint)
+        run: npm run lint
+
+      - name: Format Check (Prettier)
+        run: npm run format:check
+
+      - name: Automated Code Review & Clean Code Gate
+        run: npm run review

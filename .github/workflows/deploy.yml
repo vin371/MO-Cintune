@@ -1,0 +1,47 @@
+name: CineTune Live Web CD (No APK Reinstall)
+
+on:
+  push:
+    branches: [ "main" ]
+    paths-ignore:
+      - 'README.md'
+      - 'DEPLOY.md'
+      - '.gitignore'
+      - 'android/**'
+
+jobs:
+  deploy-live:
+    name: Auto-Deploy to Render Live Host
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Trigger Render Deploy Hook
+        env:
+          RENDER_HOOK: ${{ secrets.RENDER_DEPLOY_HOOK_URL }}
+        run: |
+          if [ -n "$RENDER_HOOK" ]; then
+            echo "🚀 Đang kích hoạt Render Deploy Hook..."
+            RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "$RENDER_HOOK")
+            HTTP_CODE=$(echo "$RESPONSE" | tail -n1)
+            BODY=$(echo "$RESPONSE" | sed '$d')
+            echo "Phản hồi Render ($HTTP_CODE): $BODY"
+            if [ "$HTTP_CODE" -ge 200 ] && [ "$HTTP_CODE" -lt 300 ]; then
+              echo "✅ Đã kích hoạt deploy thành công trên Render!"
+            else
+              echo "⚠️ Render hook trả về mã lỗi $HTTP_CODE, vui lòng kiểm tra lại Deploy Hook URL."
+              exit 1
+            fi
+          else
+            echo "ℹ️ Chưa cấu hình secret RENDER_DEPLOY_HOOK_URL."
+            echo "Nếu Render đã kết nối trực tiếp với GitHub Repository (Render Blueprint), Render sẽ tự động build từ nhánh main khi có push mới."
+          fi
+
+      - name: Deployment Summary
+        run: |
+          echo "## ⚡ CineTune Live Web Update Complete" >> $GITHUB_STEP_SUMMARY
+          echo "Mã nguồn mới nhất đã được đẩy và tự động triển khai lên máy chủ web." >> $GITHUB_STEP_SUMMARY
+          echo "- **Android App:** Mở ứng dụng CineTune trên điện thoại để trải nghiệm ngay lập tức mà **KHÔNG CẦN CÀI LẠI APK**." >> $GITHUB_STEP_SUMMARY
+          echo "- **Trang web:** https://cinetune-api.onrender.com/cinetune/#home" >> $GITHUB_STEP_SUMMARY
