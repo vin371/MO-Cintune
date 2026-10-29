@@ -67,14 +67,11 @@ CineTune đã được bổ sung hàng loạt tính năng hiện đại:
 7. **Tìm Kiếm Thông Minh & Lịch Sử Gần Đây:**
    - Thẻ gợi ý nhanh các nghệ sĩ hot (Sơn Tùng M-TP, Vũ, HIEUTHUHAI, Đen Vâu...).
    - Lưu lịch sử tìm kiếm gần đây để tìm lại nhanh chỉ bằng 1 chạm.
-8. **Thống Kê Lượt Xem / Lượt Nghe & Xếp Hạng Sao (Zing MP3 Style):**
-   - Hiển thị lượt nghe thực tế (`🎧 / 👁 4.5M lượt xem`), lượt thích (`❤️ 172K`) từ API Zing MP3.
-   - Điểm đánh giá sao tổng hợp `⭐ 4.9/5.0 sao (Zing MP3)`.
-   - Bộ chấm sao tương tác `[★ ★ ★ ★ ★]` cho phép người dùng tự đánh giá 1-5 sao và lưu vào thiết bị.
-9. **Tìm Kiếm & Yêu Cầu Bài Hát Bằng Giọng Nói (Voice Command Mic 🎙️):**
-   - Nút Micro tiện lợi ngay trên thanh tìm kiếm và header ứng dụng.
-   - Tích hợp Web Speech API tiếng Việt (`vi-VN`) với hiệu ứng sóng âm pulsing wave hiện đại.
-   - Nhận diện câu lệnh thông minh: nói _"Mở bài..."_, _"Phát bài..."_, _"Nghe bài..."_ sẽ tự động tìm kiếm và phát ngay bài hát; nói _"Tìm bài..."_ sẽ hiển thị ngay danh sách kết quả.
+8. **Giao Diện Chi Tiết Bài Hát (Song Detail Card), Thống Kê & Bộ Lọc Bên Trong:**
+   - Khung chi tiết bài hát thiết kế Glassmorphism sang trọng với hiệu ứng ánh sáng nền ambient glow.
+   - Thống kê thời gian thực từ Zing MP3: Lượt nghe (`🎧 1.8M`), Lượt thích (`❤️ 84.2K`), Đánh giá Zing Chart (`⭐ 4.9/5.0`).
+   - Widget xếp hạng sao tương tác 5 sao (`[★ ★ ★ ★ ★]`) với hiệu ứng phát sáng vàng gold và nhận xét trực quan.
+   - Bộ lọc bên trong (Inside Filter Chips): gắn thẻ tự động cho Thể loại (`🎵 V-Pop`, `🎵 Nhạc Trẻ`), Nhạc sĩ sáng tác (`✍️ ...`), Album (`💿 ...`) và Nghệ sĩ (`🎤 ...`), chạm để lọc và tìm kiếm bài hát ngay lập tức.
 
 ---
 
